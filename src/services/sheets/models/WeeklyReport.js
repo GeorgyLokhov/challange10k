@@ -1,171 +1,159 @@
 /**
- * Класс WeeklyReport представляет модель еженедельного отчета
+ * WeeklyReport
+ * 
+ * Модель данных для еженедельных отчетов
+ * Представляет структуру отчета пользователя о проделанной работе
  */
+
 class WeeklyReport {
   /**
    * Создает новый экземпляр еженедельного отчета
-   * @param {Object} data - Данные для инициализации
-   * @param {number} [data.weekNumber] - Номер недели
-   * @param {Date|string} [data.date] - Дата отчета
-   * @param {number|string} data.userId - ID пользователя
-   * @param {string} data.username - Имя пользователя
-   * @param {number} [data.state=5] - Оценка состояния (1-10)
-   * @param {Array} [data.completedTasks=[]] - Массив выполненных задач
-   * @param {Array} [data.incompleteTasks=[]] - Массив невыполненных задач
-   * @param {Array} [data.nextWeekPlans=[]] - Планы на следующую неделю
-   * @param {string} [data.comment=''] - Дополнительный комментарий
+   * @param {Object} data - Данные отчета
+   * @param {string} [data.id] - Уникальный идентификатор отчета
+   * @param {number} data.userId - ID пользователя в Telegram
+   * @param {string} [data.date] - Дата создания отчета
+   * @param {string} [data.status] - Статус самочувствия
+   * @param {Array<string>} [data.completedTasks] - Выполненные задачи
+   * @param {Array<string>} [data.plannedTasks] - Планируемые задачи
+   * @param {string} [data.comment] - Комментарий к отчету
    */
   constructor(data = {}) {
-    this.weekNumber = data.weekNumber || 0;
-    this.date = data.date instanceof Date 
-      ? data.date 
-      : data.date ? new Date(data.date) : new Date();
-    this.userId = data.userId || '';
-    this.username = data.username || '';
-    this.state = Math.min(Math.max(data.state || 5, 1), 10); // Ограничиваем от 1 до 10
-    this.completedTasks = Array.isArray(data.completedTasks) ? data.completedTasks : [];
-    this.incompleteTasks = Array.isArray(data.incompleteTasks) ? data.incompleteTasks : [];
-    this.nextWeekPlans = Array.isArray(data.nextWeekPlans) ? data.nextWeekPlans : [];
+    // Если ID не указан, генерируем новый
+    this.id = data.id || this.generateId();
+    this.userId = data.userId;
+    
+    // Если дата не указана, используем текущую
+    this.date = data.date || this._getCurrentDate();
+    
+    // Статус самочувствия (по умолчанию "Нормальное")
+    this.status = data.status || 'Нормальное';
+    
+    // Списки задач
+    this.completedTasks = data.completedTasks || [];
+    this.plannedTasks = data.plannedTasks || [];
+    
+    // Дополнительный комментарий
     this.comment = data.comment || '';
   }
 
   /**
-   * Создает экземпляр WeeklyReport из строки данных Google Sheets
-   * @param {Array} row - Строка данных из Google Sheets
-   * @returns {WeeklyReport|null} - Экземпляр отчета или null при ошибке
+   * Генерирует уникальный идентификатор для отчета
+   * @returns {string} - Уникальный ID
+   * @private
    */
-  static fromSheetRow(row) {
-    if (!row || !Array.isArray(row) || row.length < 9) {
-      return null;
-    }
-    
-    try {
-      const completedTasks = row[5] ? JSON.parse(row[5]) : [];
-      const incompleteTasks = row[6] ? JSON.parse(row[6]) : [];
-      const nextWeekPlans = row[7] ? JSON.parse(row[7]) : [];
-      
-      return new WeeklyReport({
-        weekNumber: parseInt(row[0], 10) || 0,
-        date: row[1] ? new Date(row[1]) : new Date(),
-        userId: row[2],
-        username: row[3],
-        state: parseFloat(row[4]) || 5,
-        completedTasks,
-        incompleteTasks,
-        nextWeekPlans,
-        comment: row[8] || ''
-      });
-    } catch (e) {
-      console.error('Ошибка при создании WeeklyReport из строки данных:', e);
-      return null;
-    }
+  generateId() {
+    const timestamp = Date.now();
+    const random = Math.floor(Math.random() * 10000);
+    return `${timestamp}-${random}`;
   }
 
   /**
-   * Преобразует отчет в строку для записи в Google Sheets
-   * @returns {Array} - Массив значений для строки таблицы
+   * Возвращает текущую дату в формате YYYY-MM-DD
+   * @returns {string} - Текущая дата
+   * @private
+   */
+  _getCurrentDate() {
+    return new Date().toISOString().split('T')[0];
+  }
+
+  /**
+   * Добавляет выполненную задачу в отчет
+   * @param {string} task - Текст задачи
+   * @returns {WeeklyReport} - this для цепочки вызовов
+   */
+  addCompletedTask(task) {
+    if (task && typeof task === 'string' && task.trim()) {
+      this.completedTasks.push(task.trim());
+    }
+    return this;
+  }
+
+  /**
+   * Добавляет планируемую задачу в отчет
+   * @param {string} task - Текст задачи
+   * @returns {WeeklyReport} - this для цепочки вызовов
+   */
+  addPlannedTask(task) {
+    if (task && typeof task === 'string' && task.trim()) {
+      this.plannedTasks.push(task.trim());
+    }
+    return this;
+  }
+
+  /**
+   * Устанавливает статус самочувствия
+   * @param {string} status - Статус самочувствия
+   * @returns {WeeklyReport} - this для цепочки вызовов
+   */
+  setStatus(status) {
+    if (status && typeof status === 'string') {
+      this.status = status.trim();
+    }
+    return this;
+  }
+
+  /**
+   * Устанавливает комментарий к отчету
+   * @param {string} comment - Текст комментария
+   * @returns {WeeklyReport} - this для цепочки вызовов
+   */
+  setComment(comment) {
+    if (comment && typeof comment === 'string') {
+      this.comment = comment.trim();
+    }
+    return this;
+  }
+
+  /**
+   * Проверяет, готов ли отчет для отправки
+   * @returns {boolean} - true, если отчет готов
+   */
+  isValid() {
+    // Проверяем наличие обязательных полей
+    if (!this.userId) {
+      return false;
+    }
+    
+    // Отчет должен содержать хотя бы одну выполненную или планируемую задачу
+    if (this.completedTasks.length === 0 && this.plannedTasks.length === 0) {
+      return false;
+    }
+    
+    return true;
+  }
+
+  /**
+   * Преобразует отчет в массив данных для сохранения в Google Sheets
+   * @returns {Array} - Массив значений для сохранения
    */
   toSheetRow() {
-    const formattedDate = this._formatDate(this.date);
-    
     return [
-      this.weekNumber,
-      formattedDate,
+      this.id,
       this.userId,
-      this.username,
-      this.state,
-      JSON.stringify(this.completedTasks),
-      JSON.stringify(this.incompleteTasks),
-      JSON.stringify(this.nextWeekPlans),
+      this.date,
+      this.status,
+      this.completedTasks.join(';'),
+      this.plannedTasks.join(';'),
       this.comment
     ];
   }
 
   /**
-   * Форматирует отчет для отображения пользователю в Telegram
-   * @returns {string} Форматированный текст отчета
+   * Создает отчет из строки данных Google Sheets
+   * @param {Array} row - Строка данных из таблицы
+   * @returns {WeeklyReport} - Экземпляр отчета
+   * @static
    */
-  formatForDisplay() {
-    const stateEmoji = this._getStateEmoji();
-    const formattedDate = this._formatDate(this.date);
-    
-    let result = `📋 *Еженедельный отчет*\n`;
-    result += `📅 Неделя ${this.weekNumber}, ${formattedDate}\n`;
-    result += `👤 ${this.username}\n\n`;
-    
-    result += `${stateEmoji} *Состояние:* ${this.state}/10\n\n`;
-    
-    // Выполненные задачи
-    result += `✅ *Выполненные задачи:* ${this.completedTasks.length}\n`;
-    if (this.completedTasks.length > 0) {
-      this.completedTasks.forEach((task, index) => {
-        result += `  ${index + 1}. ${task}\n`;
-      });
-    } else {
-      result += `  Нет выполненных задач\n`;
-    }
-    
-    result += `\n`;
-    
-    // Невыполненные задачи
-    result += `❌ *Невыполненные задачи:* ${this.incompleteTasks.length}\n`;
-    if (this.incompleteTasks.length > 0) {
-      this.incompleteTasks.forEach((task, index) => {
-        result += `  ${index + 1}. ${task}\n`;
-      });
-    } else {
-      result += `  Нет невыполненных задач\n`;
-    }
-    
-    result += `\n`;
-    
-    // Планы на следующую неделю
-    result += `📝 *Планы на следующую неделю:* ${this.nextWeekPlans.length}\n`;
-    if (this.nextWeekPlans.length > 0) {
-      this.nextWeekPlans.forEach((task, index) => {
-        result += `  ${index + 1}. ${task}\n`;
-      });
-    } else {
-      result += `  Планы не указаны\n`;
-    }
-    
-    // Комментарий
-    if (this.comment) {
-      result += `\n💬 *Комментарий:*\n${this.comment}\n`;
-    }
-    
-    return result;
-  }
-
-  /**
-   * Возвращает эмодзи для состояния
-   * @returns {string} Эмодзи, соответствующее состоянию
-   * @private
-   */
-  _getStateEmoji() {
-    if (this.state <= 3) return '😢';
-    if (this.state <= 5) return '😐';
-    if (this.state <= 7) return '🙂';
-    if (this.state <= 9) return '😊';
-    return '🤩';
-  }
-  
-  /**
-   * Форматирует дату в удобочитаемый вид
-   * @param {Date} date - Дата для форматирования
-   * @returns {string} Строка с датой в формате DD.MM.YYYY
-   * @private
-   */
-  _formatDate(date) {
-    if (!(date instanceof Date)) {
-      date = new Date(date);
-    }
-    
-    const day = date.getDate().toString().padStart(2, '0');
-    const month = (date.getMonth() + 1).toString().padStart(2, '0');
-    const year = date.getFullYear();
-    
-    return `${day}.${month}.${year}`;
+  static fromSheetRow(row) {
+    return new WeeklyReport({
+      id: row[0],
+      userId: row[1],
+      date: row[2],
+      status: row[3],
+      completedTasks: row[4] ? row[4].split(';') : [],
+      plannedTasks: row[5] ? row[5].split(';') : [],
+      comment: row[6] || ''
+    });
   }
 }
 

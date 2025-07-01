@@ -133,19 +133,8 @@ class TelegramController {
    * @private
    */
   async _handleMessage(context, message) {
-    // Проверяем, является ли сообщение командой
-    if (message.text && message.text.startsWith('/')) {
-      const commandParts = message.text.split(' ');
-      const command = commandParts[0].toLowerCase();
-      const commandHandled = await this.stateMachine.handleCommand(context, command, message);
-      
-      // Если команда была обработана, выходим
-      if (commandHandled) {
-        return;
-      }
-    }
-    
-    // Если это не команда или команда не была обработана, обрабатываем как обычное сообщение
+    // Передаем сообщение напрямую в машину состояний, которая сама решит,
+    // как обрабатывать команды в текущем состоянии
     await this.stateMachine.handleMessage(context, message);
   }
 

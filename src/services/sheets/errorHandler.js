@@ -1,146 +1,179 @@
 /**
- * Модуль для обработки ошибок Google Sheets API
- * Содержит логику для обработки различных типов ошибок и повторных попыток
+ * SheetsErrorHandler
+ * 
+ * Обработчик ошибок для Google Sheets API
+ * Реализует механизм повторных попыток с экспоненциальной задержкой
+ * и корректную обработку различных типов ошибок API
  */
 
 const logger = require('../../utils/logger');
 
+// Константы для повторных попыток
+const DEFAULT_MAX_RETRIES = 3;
+const DEFAULT_RETRY_DELAY_MS = 1000;
+const DEFAULT_RETRY_BACKOFF_FACTOR = 2;
+
+// Коды ошибок, для которых имеет смысл повторять запрос
+const RETRYABLE_ERROR_CODES = [
+  429, // Too Many Requests - превышен лимит запросов
+  500, // Internal Server Error - внутренняя ошибка сервера
+  502, // Bad Gateway - проблема с шлюзом
+  503, // Service Unavailable - сервис недоступен
+  504  // Gateway Timeout - таймаут шлюза
+];
+
 class SheetsErrorHandler {
   /**
-   * Максимальное количество повторных попыток
-   * @type {number}
+   * Создает новый экземпляр обработчика ошибок
+   * @param {Object} options - Опции обработчика
+   * @param {number} options.maxRetries - Максимальное количество повторных попыток
+   * @param {number} options.retryDelayMs - Начальная задержка между попытками (мс)
+   * @param {number} options.retryBackoffFactor - Фактор экспоненциального увеличения задержки
    */
-  static MAX_RETRIES = 3;
-  
-  /**
-   * Базовая задержка между повторными попытками (мс)
-   * @type {number}
-   */
-  static BASE_DELAY = 1000;
+  constructor(options = {}) {
+    this.maxRetries = options.maxRetries || DEFAULT_MAX_RETRIES;
+    this.retryDelayMs = options.retryDelayMs || DEFAULT_RETRY_DELAY_MS;
+    this.retryBackoffFactor = options.retryBackoffFactor || DEFAULT_RETRY_BACKOFF_FACTOR;
+  }
 
   /**
-   * Обработка ошибок Google Sheets API с повторными попытками
-   * @param {Function} operation - Асинхронная функция с операцией Google Sheets
-   * @param {Object} options - Настройки обработки ошибок
-   * @param {number} [options.maxRetries=3] - Максимальное количество повторных попыток
-   * @param {number} [options.baseDelay=1000] - Базовая задержка между попытками (мс)
-   * @returns {Promise<any>} - Результат операции
+   * Выполняет функцию с механизмом повторных попыток
+   * @param {Function} fn - Функция для выполнения
+   * @param {number} [retries=0] - Текущее количество повторных попыток
+   * @returns {Promise<any>} - Результат выполнения функции
    * @throws {Error} - Ошибка после всех попыток
    */
-  static async withRetry(operation, options = {}) {
-    const maxRetries = options.maxRetries || this.MAX_RETRIES;
-    const baseDelay = options.baseDelay || this.BASE_DELAY;
-    
-    let lastError;
-    
-    for (let attempt = 1; attempt <= maxRetries + 1; attempt++) {
-      try {
-        return await operation();
-      } catch (error) {
-        lastError = error;
-        
-        // Если это последняя попытка, выходим из цикла
-        if (attempt > maxRetries) break;
-        
-        // Проверяем, можно ли повторить операцию для этой ошибки
-        if (!this.isRetryableError(error)) {
-          logger.error(`Неповторяемая ошибка Google Sheets API: ${error.message}`, error);
-          throw error;
-        }
-        
-        // Экспоненциальная задержка между попытками
-        const delay = baseDelay * Math.pow(2, attempt - 1);
-        logger.warn(
-          `Ошибка Google Sheets API (попытка ${attempt}/${maxRetries}). ` +
-          `Повторная попытка через ${delay}мс: ${error.message}`
-        );
-        
-        await new Promise(resolve => setTimeout(resolve, delay));
+  async withRetry(fn, retries = 0) {
+    try {
+      return await fn();
+    } catch (error) {
+      // Если превысили максимальное количество попыток, выбрасываем ошибку
+      if (retries >= this.maxRetries) {
+        logger.error(`Превышено максимальное количество попыток (${this.maxRetries}): ${error.message}`, error);
+        throw this.formatError(error);
       }
+
+      // Проверяем, можно ли повторить запрос для данной ошибки
+      if (!this.isRetryable(error)) {
+        logger.error(`Неповторяемая ошибка: ${error.message}`, error);
+        throw this.formatError(error);
+      }
+
+      // Рассчитываем задержку для следующей попытки
+      const delay = this.calculateRetryDelay(retries);
+      
+      logger.info(`Повторная попытка ${retries + 1}/${this.maxRetries} через ${delay}мс: ${error.message}`);
+      
+      // Ждем перед следующей попыткой
+      await this.sleep(delay);
+      
+      // Рекурсивно повторяем попытку
+      return this.withRetry(fn, retries + 1);
     }
-    
-    // Логируем ошибку после всех попыток
-    logger.error(
-      `Все повторные попытки (${maxRetries}) для Google Sheets API не удались: ${lastError.message}`, 
-      lastError
-    );
-    throw lastError;
   }
 
   /**
-   * Проверяет, можно ли повторить операцию для данной ошибки
-   * @param {Error} error - Объект ошибки
-   * @returns {boolean} - true, если операцию можно повторить
+   * Проверяет, можно ли повторить запрос для данной ошибки
+   * @param {Error} error - Ошибка для проверки
+   * @returns {boolean} - true, если ошибка позволяет повторить запрос
+   * @private
    */
-  static isRetryableError(error) {
-    // Проверяем код ошибки API Google
-    const code = error.code || (error.response && error.response.status);
-    
-    // Повторяемые HTTP коды ошибок
-    const retryableCodes = [
-      408, // Request Timeout
-      429, // Too Many Requests
-      500, // Internal Server Error
-      502, // Bad Gateway
-      503, // Service Unavailable
-      504, // Gateway Timeout
-    ];
-    
-    // Повторяемые коды ошибок Google API
-    const retryableGoogleErrorCodes = [
-      'rateLimitExceeded',
-      'userRateLimitExceeded',
-      'quotaExceeded',
-      'backendError',
-      'internalError',
-    ];
-    
-    // Повторяемые сетевые ошибки
-    const retryableNetworkErrors = [
-      'ETIMEDOUT',
-      'ECONNRESET',
-      'ECONNREFUSED',
-      'ENOTFOUND',
-      'ENETUNREACH',
-    ];
-
-    // Проверяем HTTP код ошибки
-    if (code && retryableCodes.includes(code)) {
-      return true;
+  isRetryable(error) {
+    // Проверяем наличие ответа с кодом ошибки
+    if (error.response && error.response.status) {
+      return RETRYABLE_ERROR_CODES.includes(error.response.status);
     }
-    
-    // Проверяем код ошибки Google API
-    if (error.errors && Array.isArray(error.errors)) {
-      for (const err of error.errors) {
-        if (err.reason && retryableGoogleErrorCodes.includes(err.reason)) {
+
+    // Проверяем наличие кода ошибки в данных ответа
+    if (error.code) {
+      // Обрабатываем специфичные коды ошибок Google API
+      switch (error.code) {
+        case 'ECONNRESET':
+        case 'ETIMEDOUT':
+        case 'ESOCKETTIMEDOUT':
+        case 'ENOTFOUND':
+        case 'ECONNREFUSED':
           return true;
-        }
+          
+        case 'INVALID_ARGUMENT':
+        case 'NOT_FOUND':
+        case 'PERMISSION_DENIED':
+          return false;
+          
+        default:
+          // По умолчанию для сетевых ошибок разрешаем повторные попытки
+          return error.code.startsWith('E');
       }
     }
     
-    // Проверяем сетевые ошибки
-    if (error.code && retryableNetworkErrors.includes(error.code)) {
+    // Проверяем, связана ли ошибка с превышением лимитов запросов
+    if (error.message && 
+       (error.message.includes('quota') || 
+        error.message.includes('rate limit') || 
+        error.message.includes('timeout'))) {
       return true;
     }
     
-    // По умолчанию не повторяем
+    // По умолчанию не повторяем запрос
     return false;
   }
-  
+
   /**
-   * Преобразует ошибку в понятное сообщение
-   * @param {Error} error - Объект ошибки
-   * @returns {string} - Понятное сообщение об ошибке
+   * Рассчитывает задержку для следующей попытки
+   * @param {number} retries - Текущее количество попыток
+   * @returns {number} - Задержка в миллисекундах
+   * @private
    */
-  static getErrorMessage(error) {
+  calculateRetryDelay(retries) {
+    // Экспоненциальная задержка с небольшим случайным компонентом
+    const baseDelay = this.retryDelayMs * Math.pow(this.retryBackoffFactor, retries);
+    const jitter = Math.random() * 0.3 * baseDelay; // Случайный компонент до 30%
+    
+    return Math.floor(baseDelay + jitter);
+  }
+
+  /**
+   * Ожидает указанное количество миллисекунд
+   * @param {number} ms - Миллисекунды для ожидания
+   * @returns {Promise<void>} - Promise, который резолвится через указанное время
+   * @private
+   */
+  sleep(ms) {
+    return new Promise(resolve => setTimeout(resolve, ms));
+  }
+
+  /**
+   * Форматирует ошибку для выброса
+   * @param {Error} error - Исходная ошибка
+   * @returns {Error} - Отформатированная ошибка
+   * @private
+   */
+  formatError(error) {
+    // Если это ошибка API с подробностями в response
     if (error.response && error.response.data) {
-      const data = error.response.data;
-      if (data.error && data.error.message) {
-        return `Ошибка Google Sheets: ${data.error.message}`;
-      }
+      const apiError = new Error(
+        `Google Sheets API Error: ${error.response.status} - ${error.response.statusText}`
+      );
+      
+      apiError.status = error.response.status;
+      apiError.details = error.response.data;
+      apiError.originalError = error;
+      
+      return apiError;
     }
     
-    return `Ошибка при работе с Google Sheets: ${error.message}`;
+    // Если это ошибка с кодом от Google API
+    if (error.code && error.errors) {
+      const apiError = new Error(`Google Sheets API Error: ${error.code} - ${error.message}`);
+      apiError.code = error.code;
+      apiError.details = error.errors;
+      apiError.originalError = error;
+      
+      return apiError;
+    }
+    
+    // Возвращаем исходную ошибку, если её формат неизвестен
+    return error;
   }
 }
 

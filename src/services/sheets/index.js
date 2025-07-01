@@ -1,486 +1,367 @@
 /**
+ * Google Sheets Service
+ * 
  * Сервис для работы с Google Sheets API
- * Обеспечивает взаимодействие с таблицей отчетов
+ * Реализует методы для получения и сохранения данных отчетов
  */
 
 const { google } = require('googleapis');
-const config = require('../../utils/config');
 const logger = require('../../utils/logger');
-const cacheManager = require('./cacheManager');
-const errorHandler = require('./errorHandler');
+const config = require('../../utils/config');
+const CacheManager = require('./cacheManager');
+const SheetsErrorHandler = require('./errorHandler');
 const WeeklyReport = require('./models/WeeklyReport');
 const UserStats = require('./models/UserStats');
 
-class SheetsService {
+class GoogleSheetsService {
+  /**
+   * Создает новый экземпляр сервиса Google Sheets
+   */
   constructor() {
-    this.spreadsheetId = config.google.spreadsheetId;
     this.initialized = false;
+    this.auth = null;
     this.sheetsClient = null;
-    
-    // Имена листов в Google Таблице
-    this.sheetNames = {
-      reports: 'WeeklyReports'
-    };
-    
-    // Заголовки столбцов
-    this.headers = [
-      'Неделя',
-      'Дата',
-      'ID пользователя',
-      'Имя пользователя',
-      'Состояние',
-      'Выполненные задачи',
-      'Невыполненные задачи',
-      'Планы на следующую неделю',
-      'Комментарий'
-    ];
+    this.spreadsheetId = config.googleSheets.spreadsheetId;
+    this.errorHandler = new SheetsErrorHandler();
+    this.cache = new CacheManager();
   }
 
   /**
-   * Инициализирует сервис и проверяет подключение к Google Sheets API
-   * @returns {Promise<boolean>} Флаг успешной инициализации
+   * Инициализирует сервис Google Sheets
+   * @returns {Promise<boolean>} - Результат инициализации
    */
   async initialize() {
+    if (this.initialized) {
+      return true;
+    }
+
     try {
-      if (!config.google.credentials) {
-        throw new Error('Отсутствуют учетные данные для Google Sheets API');
-      }
+      // Создаем JWT клиент для авторизации с помощью сервисного аккаунта
+      this.auth = new google.auth.JWT(
+        config.googleSheets.clientEmail,
+        null,
+        config.googleSheets.privateKey.replace(/\\n/g, '\n'),
+        ['https://www.googleapis.com/auth/spreadsheets']
+      );
 
-      // Создаем клиент для аутентификации с учетными данными сервисного аккаунта
-      const auth = new google.auth.GoogleAuth({
-        credentials: config.google.credentials,
-        scopes: ['https://www.googleapis.com/auth/spreadsheets']
-      });
+      // Создаем клиент Sheets API
+      this.sheetsClient = google.sheets({ version: 'v4', auth: this.auth });
 
-      // Получаем авторизованный клиент
-      const authClient = await auth.getClient();
-      
-      // Создаем экземпляр API Google Sheets
-      this.sheetsClient = google.sheets({ 
-        version: 'v4', 
-        auth: authClient 
-      });
+      // Проверяем доступ к таблице
+      await this._testConnection();
 
-      // Проверяем подключение и доступ к таблице
-      await this.testConnection();
-      
-      // Проверяем и создаем необходимые листы и заголовки
-      await this.ensureSheetStructure();
-      
+      logger.info('Google Sheets сервис успешно инициализирован');
       this.initialized = true;
-      logger.info('Google Sheets API успешно инициализирован');
       return true;
     } catch (error) {
-      logger.error(`Ошибка инициализации Google Sheets API: ${error.message}`, error);
+      logger.error(`Ошибка при инициализации Google Sheets сервиса: ${error.message}`, error);
       this.initialized = false;
       return false;
     }
   }
 
   /**
-   * Проверяет подключение к Google Sheets API и доступ к таблице
-   * @returns {Promise<void>}
+   * Получает данные из указанного диапазона в таблице
+   * @param {string} range - Диапазон в формате A1 (например, 'Sheet1!A1:B10')
+   * @param {boolean} [forceRefresh=false] - Принудительное обновление данных, игнорируя кэш
+   * @returns {Promise<Array<Array<string>>>} - Данные из указанного диапазона
    */
-  async testConnection() {
-    try {
-      await errorHandler.withRetry(async () => {
-        const response = await this.sheetsClient.spreadsheets.get({
-          spreadsheetId: this.spreadsheetId
-        });
-        
-        logger.info(`Подключение к таблице установлено: "${response.data.properties.title}"`);
-      });
-    } catch (error) {
-      throw new Error(`Не удалось подключиться к Google Sheets: ${error.message}`);
-    }
-  }
+  async getData(range, forceRefresh = false) {
+    await this._ensureInitialized();
 
-  /**
-   * Проверяет и создает необходимые листы и заголовки
-   * @returns {Promise<void>}
-   */
-  async ensureSheetStructure() {
-    try {
-      // Получаем список листов
-      const response = await this.sheetsClient.spreadsheets.get({
-        spreadsheetId: this.spreadsheetId
-      });
-      
-      const sheets = response.data.sheets;
-      const sheetExists = sheets.some(sheet => 
-        sheet.properties.title === this.sheetNames.reports
-      );
-      
-      // Создаем лист, если он не существует
-      if (!sheetExists) {
-        await this.sheetsClient.spreadsheets.batchUpdate({
-          spreadsheetId: this.spreadsheetId,
-          requestBody: {
-            requests: [
-              {
-                addSheet: {
-                  properties: {
-                    title: this.sheetNames.reports
-                  }
-                }
-              }
-            ]
-          }
-        });
-        
-        logger.info(`Создан новый лист: ${this.sheetNames.reports}`);
+    const cacheKey = `sheets_${this.spreadsheetId}_${range}`;
+    
+    // Проверяем кэш, если не требуется принудительное обновление
+    if (!forceRefresh) {
+      const cachedData = await this.cache.get(cacheKey);
+      if (cachedData) {
+        logger.debug(`Получены данные из кэша для диапазона: ${range}`);
+        return cachedData;
       }
-      
-      // Проверяем наличие заголовков
-      await this.ensureHeaders();
-      
-    } catch (error) {
-      throw new Error(`Ошибка при настройке структуры таблицы: ${error.message}`);
     }
-  }
 
-  /**
-   * Проверяет и добавляет заголовки в лист с отчетами
-   * @returns {Promise<void>}
-   */
-  async ensureHeaders() {
-    try {
-      // Получаем первую строку
+    // Запрашиваем данные из API с обработкой ошибок и повторными попытками
+    const result = await this.errorHandler.withRetry(async () => {
       const response = await this.sheetsClient.spreadsheets.values.get({
         spreadsheetId: this.spreadsheetId,
-        range: `${this.sheetNames.reports}!A1:I1`
+        range: range,
+        valueRenderOption: 'UNFORMATTED_VALUE',
+        dateTimeRenderOption: 'FORMATTED_STRING'
       });
-      
-      // Если заголовки отсутствуют или неполные, добавляем их
-      if (!response.data.values || response.data.values[0].length !== this.headers.length) {
-        await this.sheetsClient.spreadsheets.values.update({
-          spreadsheetId: this.spreadsheetId,
-          range: `${this.sheetNames.reports}!A1:I1`,
-          valueInputOption: 'RAW',
-          requestBody: {
-            values: [this.headers]
-          }
-        });
-        
-        // Форматируем заголовки (жирный шрифт и закрепление)
-        await this.sheetsClient.spreadsheets.batchUpdate({
-          spreadsheetId: this.spreadsheetId,
-          requestBody: {
-            requests: [
-              {
-                repeatCell: {
-                  range: {
-                    sheetId: this.getSheetId(this.sheetNames.reports),
-                    startRowIndex: 0,
-                    endRowIndex: 1
-                  },
-                  cell: {
-                    userEnteredFormat: {
-                      textFormat: {
-                        bold: true
-                      }
-                    }
-                  },
-                  fields: 'userEnteredFormat.textFormat.bold'
-                }
-              },
-              {
-                updateSheetProperties: {
-                  properties: {
-                    sheetId: this.getSheetId(this.sheetNames.reports),
-                    gridProperties: {
-                      frozenRowCount: 1
-                    }
-                  },
-                  fields: 'gridProperties.frozenRowCount'
-                }
-              }
-            ]
-          }
-        });
-        
-        logger.info('Заголовки добавлены и отформатированы');
-      }
-    } catch (error) {
-      logger.error(`Ошибка при проверке/добавлении заголовков: ${error.message}`, error);
-    }
+      return response.data.values || [];
+    });
+
+    // Сохраняем результат в кэш на 5 минут
+    await this.cache.set(cacheKey, result, 300);
+    
+    logger.debug(`Получены данные из API для диапазона: ${range}`);
+    return result;
   }
 
   /**
-   * Получает ID листа по его имени
-   * @param {string} sheetName - Имя листа
-   * @returns {number|null} ID листа или null, если лист не найден
+   * Сохраняет данные в указанный диапазон таблицы
+   * @param {string} range - Диапазон в формате A1
+   * @param {Array<Array<any>>} values - Данные для сохранения
+   * @returns {Promise<Object>} - Результат операции
    */
-  async getSheetId(sheetName) {
-    try {
-      const response = await this.sheetsClient.spreadsheets.get({
-        spreadsheetId: this.spreadsheetId
-      });
-      
-      const sheet = response.data.sheets.find(s => 
-        s.properties.title === sheetName
-      );
-      
-      return sheet ? sheet.properties.sheetId : null;
-    } catch (error) {
-      logger.error(`Ошибка при получении ID листа: ${error.message}`, error);
-      return null;
-    }
-  }
+  async updateData(range, values) {
+    await this._ensureInitialized();
 
-  /**
-   * Сохраняет еженедельный отчет в Google Sheets
-   * @param {WeeklyReport|Object} reportData - Данные отчета
-   * @returns {Promise<boolean>} Результат операции
-   */
-  async saveReport(reportData) {
-    try {
-      // Убеждаемся, что сервис инициализирован
-      if (!this.initialized) {
-        await this.initialize();
-      }
-      
-      // Преобразуем данные в экземпляр WeeklyReport, если необходимо
-      const report = reportData instanceof WeeklyReport 
-        ? reportData 
-        : new WeeklyReport(reportData);
-      
-      // Получаем строку для записи в таблицу
-      const rowValues = report.toSheetRow();
-      
-      // Записываем данные в таблицу с повторными попытками
-      await errorHandler.withRetry(async () => {
-        await this.sheetsClient.spreadsheets.values.append({
-          spreadsheetId: this.spreadsheetId,
-          range: `${this.sheetNames.reports}!A:I`,
-          valueInputOption: 'USER_ENTERED',
-          requestBody: {
-            values: [rowValues]
-          }
-        });
-      });
-      
-      // Очищаем кэш после добавления новых данных
-      await this.invalidateCache();
-      
-      logger.info(`Отчет успешно сохранен для пользователя ${report.userId}, неделя ${report.weekNumber}`);
-      return true;
-    } catch (error) {
-      logger.error(`Ошибка при сохранении отчета: ${error.message}`, error);
-      return false;
-    }
-  }
-
-  /**
-   * Получает последний отчет пользователя
-   * @param {number|string} userId - ID пользователя
-   * @returns {Promise<WeeklyReport|null>} Последний отчет пользователя или null
-   */
-  async getLastReport(userId) {
-    try {
-      // Убеждаемся, что сервис инициализирован
-      if (!this.initialized) {
-        await this.initialize();
-      }
-      
-      // Функция для получения данных из API
-      const fetchReports = async () => {
-        return await errorHandler.withRetry(async () => {
-          const response = await this.sheetsClient.spreadsheets.values.get({
-            spreadsheetId: this.spreadsheetId,
-            range: `${this.sheetNames.reports}!A2:I`
-          });
-          
-          return response.data.values || [];
-        });
-      };
-      
-      // Получаем данные с использованием кэша
-      const reports = await cacheManager.getOrSet(
-        'all_reports', 
-        fetchReports,
-        300 // 5 минут
-      );
-      
-      if (reports.length === 0) {
-        return null;
-      }
-      
-      // Ищем последний отчет пользователя (с конца)
-      for (let i = reports.length - 1; i >= 0; i--) {
-        const row = reports[i];
-        if (row[2] == userId) { // Сравнение без строгой типизации, т.к. могут быть строки или числа
-          return WeeklyReport.fromSheetRow(row);
+    // Обновляем данные с обработкой ошибок и повторными попытками
+    const result = await this.errorHandler.withRetry(async () => {
+      const response = await this.sheetsClient.spreadsheets.values.update({
+        spreadsheetId: this.spreadsheetId,
+        range: range,
+        valueInputOption: 'USER_ENTERED',
+        resource: {
+          values: values
         }
-      }
-      
-      return null;
-    } catch (error) {
-      logger.error(`Ошибка при получении последнего отчета: ${error.message}`, error);
-      return null;
-    }
+      });
+      return response.data;
+    });
+
+    // Инвалидируем кэш для обновленного диапазона
+    const cacheKey = `sheets_${this.spreadsheetId}_${range}`;
+    await this.cache.delete(cacheKey);
+    
+    logger.info(`Обновлены данные в диапазоне: ${range}`);
+    return result;
+  }
+
+  /**
+   * Добавляет данные в конец указанного листа
+   * @param {string} range - Диапазон в формате A1, например 'Sheet1!A:Z'
+   * @param {Array<Array<any>>} values - Данные для добавления
+   * @returns {Promise<Object>} - Результат операции
+   */
+  async appendData(range, values) {
+    await this._ensureInitialized();
+
+    // Добавляем данные с обработкой ошибок и повторными попытками
+    const result = await this.errorHandler.withRetry(async () => {
+      const response = await this.sheetsClient.spreadsheets.values.append({
+        spreadsheetId: this.spreadsheetId,
+        range: range,
+        valueInputOption: 'USER_ENTERED',
+        insertDataOption: 'INSERT_ROWS',
+        resource: {
+          values: values
+        }
+      });
+      return response.data;
+    });
+
+    // Инвалидируем кэш для обновленного листа
+    const sheetName = range.split('!')[0];
+    const cacheKeyPattern = `sheets_${this.spreadsheetId}_${sheetName}`;
+    await this.cache.deleteByPattern(cacheKeyPattern);
+    
+    logger.info(`Добавлены данные в диапазон: ${range}`);
+    return result;
+  }
+
+  /**
+   * Получает еженедельные отчеты пользователя
+   * @param {number} userId - ID пользователя Telegram
+   * @param {number} [limit=10] - Лимит количества отчетов
+   * @returns {Promise<Array<WeeklyReport>>} - Список объектов отчетов
+   */
+  async getUserReports(userId, limit = 10) {
+    await this._ensureInitialized();
+    
+    const range = `${config.googleSheets.reportsSheet}!A:G`;
+    const data = await this.getData(range);
+    
+    const reports = data
+      .filter(row => row[1] === userId)
+      .slice(-limit)
+      .map(row => new WeeklyReport({
+        id: row[0],
+        userId: row[1],
+        date: row[2],
+        status: row[3],
+        completedTasks: row[4] ? row[4].split(';') : [],
+        plannedTasks: row[5] ? row[5].split(';') : [],
+        comment: row[6] || ''
+      }));
+    
+    return reports;
+  }
+
+  /**
+   * Сохраняет еженедельный отчет пользователя
+   * @param {WeeklyReport} report - Объект отчета для сохранения
+   * @returns {Promise<Object>} - Результат операции
+   */
+  async saveReport(report) {
+    await this._ensureInitialized();
+    
+    const values = [[
+      report.id,
+      report.userId,
+      report.date,
+      report.status,
+      report.completedTasks.join(';'),
+      report.plannedTasks.join(';'),
+      report.comment
+    ]];
+    
+    const range = `${config.googleSheets.reportsSheet}!A:G`;
+    const result = await this.appendData(range, values);
+    
+    // Обновляем статистику пользователя
+    await this.updateUserStats(report.userId, {
+      lastReportDate: report.date,
+      reportsCount: 1, // Инкрементируем счетчик отчетов на 1
+      completedTasksCount: report.completedTasks.length,
+      plannedTasksCount: report.plannedTasks.length
+    });
+    
+    return result;
   }
 
   /**
    * Получает статистику пользователя
-   * @param {number|string} userId - ID пользователя
-   * @returns {Promise<UserStats>} Объект статистики пользователя
+   * @param {number} userId - ID пользователя Telegram
+   * @returns {Promise<UserStats|null>} - Объект статистики или null, если пользователь не найден
    */
   async getUserStats(userId) {
-    try {
-      // Убеждаемся, что сервис инициализирован
-      if (!this.initialized) {
-        await this.initialize();
-      }
-      
-      // Функция для получения данных из API
-      const fetchReports = async () => {
-        return await errorHandler.withRetry(async () => {
-          const response = await this.sheetsClient.spreadsheets.values.get({
-            spreadsheetId: this.spreadsheetId,
-            range: `${this.sheetNames.reports}!A2:I`
-          });
-          
-          return response.data.values || [];
-        });
-      };
-      
-      // Получаем данные с использованием кэша
-      const reports = await cacheManager.getOrSet(
-        'all_reports', 
-        fetchReports,
-        300 // 5 минут
-      );
-      
-      // Создаем объект статистики
-      return UserStats.fromReports(reports, userId);
-    } catch (error) {
-      logger.error(`Ошибка при получении статистики пользователя: ${error.message}`, error);
-      return new UserStats(); // Возвращаем пустую статистику
+    await this._ensureInitialized();
+    
+    const range = `${config.googleSheets.usersSheet}!A:G`;
+    const data = await this.getData(range);
+    
+    const userRow = data.find(row => row[0] === userId);
+    if (!userRow) {
+      return null;
     }
+    
+    return new UserStats({
+      userId: userRow[0],
+      username: userRow[1],
+      firstName: userRow[2],
+      lastName: userRow[3],
+      registrationDate: userRow[4],
+      lastReportDate: userRow[5],
+      reportsCount: parseInt(userRow[6] || '0', 10),
+      completedTasksCount: parseInt(userRow[7] || '0', 10),
+      plannedTasksCount: parseInt(userRow[8] || '0', 10)
+    });
   }
 
   /**
-   * Получает следующий номер недели для отчета
-   * @returns {Promise<number>} Номер следующей недели
+   * Создает или обновляет статистику пользователя
+   * @param {number} userId - ID пользователя Telegram
+   * @param {Object} updateData - Данные для обновления
+   * @returns {Promise<Object>} - Результат операции
    */
-  async getNextWeekNumber() {
-    try {
-      // Убеждаемся, что сервис инициализирован
-      if (!this.initialized) {
-        await this.initialize();
-      }
-      
-      // Функция для получения данных из API
-      const fetchWeekNumbers = async () => {
-        return await errorHandler.withRetry(async () => {
-          const response = await this.sheetsClient.spreadsheets.values.get({
-            spreadsheetId: this.spreadsheetId,
-            range: `${this.sheetNames.reports}!A2:A`
-          });
-          
-          return response.data.values || [];
-        });
-      };
-      
-      // Получаем данные с использованием кэша
-      const weekNumbers = await cacheManager.getOrSet(
-        'week_numbers', 
-        fetchWeekNumbers,
-        300 // 5 минут
-      );
-      
-      if (weekNumbers.length === 0) {
-        return 1; // Первая неделя
-      }
-      
-      // Находим максимальный номер недели
-      let maxWeek = 0;
-      for (const row of weekNumbers) {
-        if (row[0]) {
-          const weekNum = parseInt(row[0]);
-          if (!isNaN(weekNum) && weekNum > maxWeek) {
-            maxWeek = weekNum;
-          }
+  async updateUserStats(userId, updateData = {}) {
+    await this._ensureInitialized();
+    
+    // Получаем текущую статистику пользователя или создаем новую запись
+    let userStats = await this.getUserStats(userId);
+    
+    if (!userStats) {
+      // Если пользователь не найден, создаем новую запись
+      userStats = new UserStats({
+        userId: userId,
+        registrationDate: new Date().toISOString(),
+        reportsCount: 0,
+        completedTasksCount: 0,
+        plannedTasksCount: 0
+      });
+    }
+    
+    // Обновляем поля статистики
+    Object.entries(updateData).forEach(([key, value]) => {
+      if (key in userStats && key !== 'userId') {
+        if (['reportsCount', 'completedTasksCount', 'plannedTasksCount'].includes(key)) {
+          // Для числовых полей выполняем инкремент
+          userStats[key] += value;
+        } else {
+          // Для остальных полей присваиваем новое значение
+          userStats[key] = value;
         }
       }
+    });
+    
+    // Получаем все записи пользователей
+    const range = `${config.googleSheets.usersSheet}!A:I`;
+    const data = await this.getData(range);
+    
+    // Ищем индекс пользователя в данных
+    const userIndex = data.findIndex(row => row[0] === userId);
+    
+    if (userIndex === -1) {
+      // Если пользователь не найден, добавляем новую запись
+      const values = [[
+        userStats.userId,
+        userStats.username || '',
+        userStats.firstName || '',
+        userStats.lastName || '',
+        userStats.registrationDate,
+        userStats.lastReportDate || '',
+        userStats.reportsCount,
+        userStats.completedTasksCount,
+        userStats.plannedTasksCount
+      ]];
       
-      return maxWeek + 1;
-    } catch (error) {
-      logger.error(`Ошибка при получении следующего номера недели: ${error.message}`, error);
-      return 1; // По умолчанию возвращаем 1
+      return await this.appendData(`${config.googleSheets.usersSheet}!A:I`, values);
+    } else {
+      // Если пользователь найден, обновляем существующую запись
+      // Индекс в таблице начинается с 1, а не с 0
+      const rowNumber = userIndex + 1;
+      const values = [[
+        userStats.userId,
+        userStats.username || '',
+        userStats.firstName || '',
+        userStats.lastName || '',
+        userStats.registrationDate,
+        userStats.lastReportDate || '',
+        userStats.reportsCount,
+        userStats.completedTasksCount,
+        userStats.plannedTasksCount
+      ]];
+      
+      return await this.updateData(`${config.googleSheets.usersSheet}!A${rowNumber}:I${rowNumber}`, values);
     }
   }
 
   /**
-   * Получает планы с предыдущей недели
-   * @param {number} weekNumber - Текущий номер недели
-   * @returns {Promise<Array<string>>} Массив планов или пустой массив
+   * Проверяет соединение с Google Sheets API
+   * @returns {Promise<boolean>} - true, если соединение установлено
+   * @private
    */
-  async getPreviousWeekPlans(weekNumber) {
+  async _testConnection() {
     try {
-      // Если это первая неделя, нет предыдущих планов
-      if (weekNumber <= 1) {
-        return [];
-      }
+      // Пытаемся получить метаданные таблицы
+      const response = await this.sheetsClient.spreadsheets.get({
+        spreadsheetId: this.spreadsheetId
+      });
       
-      // Убеждаемся, что сервис инициализирован
-      if (!this.initialized) {
-        await this.initialize();
-      }
-      
-      const previousWeek = weekNumber - 1;
-      
-      // Функция для получения данных из API
-      const fetchReports = async () => {
-        return await errorHandler.withRetry(async () => {
-          const response = await this.sheetsClient.spreadsheets.values.get({
-            spreadsheetId: this.spreadsheetId,
-            range: `${this.sheetNames.reports}!A2:H`
-          });
-          
-          return response.data.values || [];
-        });
-      };
-      
-      // Получаем данные с использованием кэша
-      const reports = await cacheManager.getOrSet(
-        'all_reports', 
-        fetchReports,
-        300 // 5 минут
-      );
-      
-      // Ищем отчет за предыдущую неделю
-      for (const row of reports) {
-        if (parseInt(row[0]) === previousWeek) {
-          // Индекс 7 - планы на следующую неделю (A=0, B=1, ...)
-          const plansData = row[7] || '[]';
-          try {
-            return JSON.parse(plansData);
-          } catch (e) {
-            logger.error(`Ошибка при парсинге планов предыдущей недели: ${e.message}`);
-            return [];
-          }
-        }
-      }
-      
-      return [];
+      logger.info(`Успешное соединение с таблицей: ${response.data.properties.title}`);
+      return true;
     } catch (error) {
-      logger.error(`Ошибка при получении планов предыдущей недели: ${error.message}`, error);
-      return [];
+      logger.error(`Ошибка соединения с Google Sheets API: ${error.message}`, error);
+      throw new Error(`Ошибка соединения с Google Sheets API: ${error.message}`);
     }
   }
 
   /**
-   * Инвалидирует кэш для обновления данных
+   * Проверяет, что сервис инициализирован
    * @returns {Promise<void>}
+   * @private
    */
-  async invalidateCache() {
-    await cacheManager.del('all_reports');
-    await cacheManager.del('week_numbers');
-    logger.debug('Кэш данных Google Sheets очищен');
+  async _ensureInitialized() {
+    if (!this.initialized) {
+      await this.initialize();
+    }
+    
+    if (!this.initialized) {
+      throw new Error('Google Sheets сервис не инициализирован');
+    }
   }
 }
 
-// Экспортируем одиночный экземпляр сервиса
-module.exports = new SheetsService(); 
+// Экспортируем singleton
+module.exports = new GoogleSheetsService(); 

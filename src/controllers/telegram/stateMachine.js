@@ -73,8 +73,47 @@ class StateMachine {
     logger.info(`Обработка сообщения для пользователя ${context.userId} в состоянии ${currentStateName}`);
     
     try {
-      // Обрабатываем сообщение в текущем состоянии
-      const nextStateName = await currentState.handleMessage(context, message);
+      // Проверяем, является ли сообщение командой
+      let nextStateName;
+      
+      if (message.text && message.text.startsWith('/')) {
+        const commandParts = message.text.split(' ');
+        const command = commandParts[0].toLowerCase();
+        
+        // ВАЖНО: Всегда сначала даем текущему состоянию возможность обработать команду,
+        // даже если команда не специфична для текущего состояния.
+        // Это предотвратит сброс сессии при специфичных командах типа /done
+        logger.info(`Обработка команды ${command} в текущем состоянии ${currentStateName}`);
+        nextStateName = await currentState.handleMessage(context, message);
+
+        // Только если текущее состояние не обработало команду (вернуло undefined),
+        // пытаемся найти другое состояние, которое может обработать эту команду
+        if (nextStateName === undefined) {
+          // Проверяем, может ли какое-либо другое состояние обработать эту команду
+          for (const [stateName, state] of Object.entries(this.states)) {
+            if (stateName !== currentStateName && state.canHandleCommand && 
+                state.canHandleCommand(command)) {
+              logger.info(`Команда ${command} перехвачена состоянием ${stateName}`);
+              
+              // Если другое состояние может обработать команду, переходим в него
+              await this.transition(context, stateName);
+              nextStateName = await state.handleMessage(context, message);
+              break;
+            }
+          }
+          
+          // Если ни одно состояние не может обработать команду,
+          // и мы в состоянии отличном от начального, вернемся в начальное
+          if (nextStateName === undefined && currentStateName !== this.initialState) {
+            logger.info(`Команда ${command} не обработана ни одним состоянием, переход в начальное состояние`);
+            await this.transition(context, this.initialState);
+            nextStateName = await this.getState(this.initialState).handleMessage(context, message);
+          }
+        }
+      } else {
+        // Обычное сообщение обрабатываем в текущем состоянии
+        nextStateName = await currentState.handleMessage(context, message);
+      }
       
       // Если есть переход в следующее состояние
       if (nextStateName && nextStateName !== currentStateName) {

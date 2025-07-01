@@ -1,89 +1,184 @@
 /**
- * Модуль для кэширования данных из Google Sheets
- * Предотвращает частые обращения к API Google Sheets
+ * CacheManager
+ * 
+ * Менеджер кэширования для данных Google Sheets API
+ * Реализует хранение данных в памяти с указанием времени жизни (TTL)
  */
 
-const NodeCache = require('node-cache');
-const config = require('../../utils/config');
 const logger = require('../../utils/logger');
 
 class CacheManager {
+  /**
+   * Создает новый экземпляр менеджера кэша
+   */
   constructor() {
-    // Инициализация кэша с настройками из конфигурации
-    this.cache = new NodeCache({
-      stdTTL: config.cache.ttl,
-      checkperiod: config.cache.checkPeriod
-    });
-
-    logger.info('Кэш-менеджер инициализирован');
+    // Хранилище кэша в формате {key: {value, expires}}
+    this.cache = new Map();
+    
+    // Интервал очистки истекших записей кэша (10 минут)
+    this.cleanupInterval = 10 * 60 * 1000;
+    
+    // Запускаем периодическую очистку кэша
+    this._startCleanupInterval();
   }
 
   /**
-   * Получить данные из кэша
-   * @param {string} key - Ключ кэша
-   * @returns {any|null} - Данные или null, если кэша нет или он устарел
+   * Получает значение из кэша по ключу
+   * @param {string} key - Ключ для получения данных
+   * @returns {Promise<any|null>} - Данные из кэша или null, если ключ не найден или значение истекло
    */
   async get(key) {
-    const value = this.cache.get(key);
-    if (value) {
-      logger.debug(`Получены данные из кэша: ${key}`);
-      return value;
+    const item = this.cache.get(key);
+    
+    // Если ключ не найден, возвращаем null
+    if (!item) {
+      return null;
     }
-    logger.debug(`Кэш не найден для ключа: ${key}`);
-    return null;
-  }
-
-  /**
-   * Сохранить данные в кэше
-   * @param {string} key - Ключ кэша
-   * @param {any} value - Данные для сохранения
-   * @param {number} [ttl] - Время жизни кэша в секундах (опционально)
-   */
-  async set(key, value, ttl = config.cache.ttl) {
-    this.cache.set(key, value, ttl);
-    logger.debug(`Данные сохранены в кэше: ${key} (TTL: ${ttl}с)`);
-    return value;
-  }
-
-  /**
-   * Удалить данные из кэша
-   * @param {string} key - Ключ кэша
-   */
-  async del(key) {
-    this.cache.del(key);
-    logger.debug(`Данные удалены из кэша: ${key}`);
-  }
-
-  /**
-   * Очистить весь кэш
-   */
-  async flush() {
-    this.cache.flushAll();
-    logger.info('Кэш полностью очищен');
-  }
-
-  /**
-   * Получить или создать кэш
-   * @param {string} key - Ключ кэша
-   * @param {Function} fetchFunction - Функция для получения данных, если кэша нет
-   * @param {number} [ttl] - Время жизни кэша в секундах (опционально)
-   * @returns {Promise<any>} - Данные из кэша или полученные через функцию
-   */
-  async getOrSet(key, fetchFunction, ttl = config.cache.ttl) {
-    const cachedData = await this.get(key);
-    if (cachedData !== null) {
-      return cachedData;
+    
+    // Проверяем, не истек ли срок жизни кэша
+    if (Date.now() > item.expires) {
+      // Если истек, удаляем запись и возвращаем null
+      this.cache.delete(key);
+      return null;
     }
+    
+    logger.debug(`Получено значение из кэша по ключу: ${key}`);
+    return item.value;
+  }
 
-    logger.debug(`Получение данных через функцию для ключа: ${key}`);
+  /**
+   * Сохраняет значение в кэше с указанным TTL
+   * @param {string} key - Ключ для сохранения данных
+   * @param {any} value - Значение для сохранения
+   * @param {number} ttlSeconds - Время жизни в секундах (по умолчанию 5 минут)
+   * @returns {Promise<boolean>} - Результат операции
+   */
+  async set(key, value, ttlSeconds = 300) {
     try {
-      const data = await fetchFunction();
-      return this.set(key, data, ttl);
+      const expires = Date.now() + ttlSeconds * 1000;
+      
+      this.cache.set(key, {
+        value,
+        expires
+      });
+      
+      logger.debug(`Сохранено значение в кэше по ключу: ${key} (TTL: ${ttlSeconds}s)`);
+      return true;
     } catch (error) {
-      logger.error(`Ошибка при получении данных для кэша: ${key}`, error);
-      throw error;
+      logger.error(`Ошибка при сохранении в кэш: ${error.message}`, error);
+      return false;
+    }
+  }
+
+  /**
+   * Удаляет значение из кэша по ключу
+   * @param {string} key - Ключ для удаления
+   * @returns {Promise<boolean>} - true, если ключ был удален
+   */
+  async delete(key) {
+    const result = this.cache.delete(key);
+    
+    if (result) {
+      logger.debug(`Удален ключ из кэша: ${key}`);
+    }
+    
+    return result;
+  }
+
+  /**
+   * Удаляет все значения из кэша, соответствующие шаблону
+   * @param {string} pattern - Шаблон ключа (префикс или часть ключа)
+   * @returns {Promise<number>} - Количество удаленных ключей
+   */
+  async deleteByPattern(pattern) {
+    let count = 0;
+    
+    // Находим все ключи, соответствующие шаблону
+    for (const key of this.cache.keys()) {
+      if (key.includes(pattern)) {
+        this.cache.delete(key);
+        count++;
+      }
+    }
+    
+    if (count > 0) {
+      logger.debug(`Удалено ${count} ключей из кэша по шаблону: ${pattern}`);
+    }
+    
+    return count;
+  }
+
+  /**
+   * Возвращает все ключи, соответствующие шаблону
+   * @param {string} pattern - Шаблон ключа (префикс или часть ключа)
+   * @returns {Promise<Array<string>>} - Массив найденных ключей
+   */
+  async keys(pattern) {
+    const result = [];
+    
+    for (const key of this.cache.keys()) {
+      if (key.includes(pattern)) {
+        result.push(key);
+      }
+    }
+    
+    return result;
+  }
+
+  /**
+   * Очищает весь кэш
+   * @returns {Promise<boolean>} - Результат операции
+   */
+  async clear() {
+    try {
+      this.cache.clear();
+      logger.debug('Кэш полностью очищен');
+      return true;
+    } catch (error) {
+      logger.error(`Ошибка при очистке кэша: ${error.message}`, error);
+      return false;
+    }
+  }
+
+  /**
+   * Возвращает количество записей в кэше
+   * @returns {Promise<number>} - Количество записей
+   */
+  async size() {
+    return this.cache.size;
+  }
+
+  /**
+   * Запускает интервал очистки истекших записей кэша
+   * @private
+   */
+  _startCleanupInterval() {
+    setInterval(() => {
+      this._cleanupExpiredItems();
+    }, this.cleanupInterval);
+    
+    logger.debug(`Запущен интервал очистки кэша (${this.cleanupInterval / 1000}s)`);
+  }
+
+  /**
+   * Удаляет истекшие записи из кэша
+   * @private
+   */
+  _cleanupExpiredItems() {
+    const now = Date.now();
+    let count = 0;
+    
+    for (const [key, item] of this.cache.entries()) {
+      if (now > item.expires) {
+        this.cache.delete(key);
+        count++;
+      }
+    }
+    
+    if (count > 0) {
+      logger.debug(`Автоматически удалено ${count} истекших записей из кэша`);
     }
   }
 }
 
-module.exports = new CacheManager(); 
+module.exports = CacheManager; 
