@@ -21,6 +21,18 @@ class GoogleSheetsManager:
         creds_dict = json.loads(creds_json)
         return Credentials.from_service_account_info(creds_dict)
     
+    def _format_date_russian(self, dt):
+        """Форматирование даты в русском формате"""
+        months = [
+            "января", "февраля", "марта", "апреля", "мая", "июня",
+            "июля", "августа", "сентября", "октября", "ноября", "декабря"
+        ]
+        day = dt.day
+        month = months[dt.month - 1]
+        year = dt.year
+        time = dt.strftime('%H:%M')
+        return f"{day} {month} {year}, {time}"
+    
     def get_previous_week_tasks(self, week_number: int) -> List[str]:
         """Получить планируемые задачи из предыдущей недели"""
         try:
@@ -55,14 +67,14 @@ class GoogleSheetsManager:
                    comment: str, rating: int) -> bool:
         """Сохранить отчет в Google Sheets"""
         try:
-            # Подготовка данных для записи
-            date_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+            # Подготовка данных для записи с русским форматом даты
+            date_str = self._format_date_russian(datetime.now())
             completed_str = '\n'.join(completed_tasks) if completed_tasks else ''
             incomplete_str = '\n'.join(incomplete_tasks) if incomplete_tasks else ''
             planned_str = '\n'.join(planned_tasks) if planned_tasks else ''
             comment_str = comment if comment else ''
             
-            # ИСПРАВЛЕННЫЙ порядок данных согласно заголовкам таблицы:
+            # Порядок данных согласно заголовкам таблицы:
             # A: Дата и время отчёта
             # B: Номер недели  
             # C: Оценка недели
@@ -71,7 +83,7 @@ class GoogleSheetsManager:
             # F: Запланированные задачи
             # G: Комментарий
             values = [[
-                date_str,           # A: Дата и время отчёта
+                date_str,           # A: Дата и время отчёта (русский формат)
                 str(week_number),   # B: Номер недели
                 str(rating),        # C: Оценка недели
                 completed_str,      # D: Сделанные задачи
@@ -79,6 +91,8 @@ class GoogleSheetsManager:
                 planned_str,        # F: Запланированные задачи
                 comment_str         # G: Комментарий
             ]]
+            
+            print(f"📅 Saving report with date: {date_str}")
             
             # Проверяем, есть ли заголовки
             result = self.sheet.values().get(
@@ -177,3 +191,7 @@ class GoogleSheetsManager:
         except Exception as e:
             print(f"Error clearing sheet: {e}")
             return False
+    
+    def get_test_date(self) -> str:
+        """Тестовая функция для проверки форматирования даты"""
+        return self._format_date_russian(datetime.now())
