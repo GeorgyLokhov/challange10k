@@ -22,8 +22,8 @@ module.exports = {
   google: {
     spreadsheetId: process.env.GOOGLE_SHEET_ID,
     credentials: process.env.GOOGLE_CREDENTIALS ? JSON.parse(process.env.GOOGLE_CREDENTIALS) : null,
-    reportsSheet: 'Отчеты',
-    usersSheet: 'Пользователи'
+    reportsSheet: 'WeeklyReports',
+    usersSheet: 'WeeklyReports'
   },
   
   // Настройки логирования
