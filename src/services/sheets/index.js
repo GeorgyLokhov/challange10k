@@ -172,23 +172,21 @@ class GoogleSheetsService {
    * @param {number} [limit=10] - Лимит количества отчетов
    * @returns {Promise<Array<WeeklyReport>>} - Список объектов отчетов
    */
-  async getUserReports(userId, limit = 10) {
+  async getUserReports(limit = 10) {
     await this._ensureInitialized();
     
-    const range = `${config.google.reportsSheet}!A:G`;
+    const range = `${config.google.reportsSheet}!A:E`;
     const data = await this.getData(range);
     
+    // Так как пользователь один, просто берем последние отчеты
     const reports = data
-      .filter(row => row[1] === userId)
       .slice(-limit)
       .map(row => new WeeklyReport({
-        id: row[0],
-        userId: row[1],
-        date: row[2],
-        status: row[3],
-        completedTasks: row[4] ? row[4].split(';') : [],
-        plannedTasks: row[5] ? row[5].split(';') : [],
-        comment: row[6] || ''
+        date: row[0],
+        status: row[1],
+        completedTasks: row[2] ? row[2].split(';') : [],
+        plannedTasks: row[3] ? row[3].split(';') : [],
+        comment: row[4] || ''
       }));
     
     return reports;
@@ -202,135 +200,11 @@ class GoogleSheetsService {
   async saveReport(report) {
     await this._ensureInitialized();
     
-    const values = [[
-      report.id,
-      report.userId,
-      report.date,
-      report.status,
-      report.completedTasks.join(';'),
-      report.plannedTasks.join(';'),
-      report.comment
-    ]];
+    const reportInstance = new WeeklyReport(report);
+    const values = [reportInstance.toSheetRow()];
     
-    const range = `${config.google.reportsSheet}!A:G`;
-    const result = await this.appendData(range, values);
-    
-    // Обновляем статистику пользователя
-    await this.updateUserStats(report.userId, {
-      lastReportDate: report.date,
-      reportsCount: 1, // Инкрементируем счетчик отчетов на 1
-      completedTasksCount: report.completedTasks.length,
-      plannedTasksCount: report.plannedTasks.length
-    });
-    
-    return result;
-  }
-
-  /**
-   * Получает статистику пользователя
-   * @param {number} userId - ID пользователя Telegram
-   * @returns {Promise<UserStats|null>} - Объект статистики или null, если пользователь не найден
-   */
-  async getUserStats(userId) {
-    await this._ensureInitialized();
-    
-    const range = `${config.google.usersSheet}!A:G`;
-    const data = await this.getData(range);
-    
-    const userRow = data.find(row => row[0] === userId);
-    if (!userRow) {
-      return null;
-    }
-    
-    return new UserStats({
-      userId: userRow[0],
-      username: userRow[1],
-      firstName: userRow[2],
-      lastName: userRow[3],
-      registrationDate: userRow[4],
-      lastReportDate: userRow[5],
-      reportsCount: parseInt(userRow[6] || '0', 10),
-      completedTasksCount: parseInt(userRow[7] || '0', 10),
-      plannedTasksCount: parseInt(userRow[8] || '0', 10)
-    });
-  }
-
-  /**
-   * Создает или обновляет статистику пользователя
-   * @param {number} userId - ID пользователя Telegram
-   * @param {Object} updateData - Данные для обновления
-   * @returns {Promise<Object>} - Результат операции
-   */
-  async updateUserStats(userId, updateData = {}) {
-    await this._ensureInitialized();
-    
-    // Получаем текущую статистику пользователя или создаем новую запись
-    let userStats = await this.getUserStats(userId);
-    
-    if (!userStats) {
-      // Если пользователь не найден, создаем новую запись
-      userStats = new UserStats({
-        userId: userId,
-        registrationDate: new Date().toISOString(),
-        reportsCount: 0,
-        completedTasksCount: 0,
-        plannedTasksCount: 0
-      });
-    }
-    
-    // Обновляем поля статистики
-    Object.entries(updateData).forEach(([key, value]) => {
-      if (key in userStats && key !== 'userId') {
-        if (['reportsCount', 'completedTasksCount', 'plannedTasksCount'].includes(key)) {
-          // Для числовых полей выполняем инкремент
-          userStats[key] += value;
-        } else {
-          // Для остальных полей присваиваем новое значение
-          userStats[key] = value;
-        }
-      }
-    });
-    
-    // Получаем все записи пользователей
-    const range = `${config.google.usersSheet}!A:I`;
-    const data = await this.getData(range);
-    
-    // Ищем индекс пользователя в данных
-    const userIndex = data.findIndex(row => row[0] === userId);
-    
-    if (userIndex === -1) {
-      // Если пользователь не найден, добавляем новую запись
-      const values = [[
-        userStats.userId,
-        userStats.username || '',
-        userStats.firstName || '',
-        userStats.lastName || '',
-        userStats.registrationDate,
-        userStats.lastReportDate || '',
-        userStats.reportsCount,
-        userStats.completedTasksCount,
-        userStats.plannedTasksCount
-      ]];
-      
-      return await this.appendData(`${config.google.usersSheet}!A:I`, values);
-    } else {
-      // Если пользователь найден, обновляем существующую запись
-      // Индекс в таблице начинается с 1, а не с 0
-      const rowNumber = userIndex + 1;
-      const values = [[
-        userStats.userId,
-        userStats.username || '',
-        userStats.firstName || '',
-        userStats.lastName || '',
-        userStats.registrationDate,
-        userStats.lastReportDate || '',
-        userStats.reportsCount,
-        userStats.completedTasksCount,
-        userStats.plannedTasksCount
-      ]];
-      
-      return await this.updateData(`${config.google.usersSheet}!A${rowNumber}:I${rowNumber}`, values);
-    }
+    const range = `${config.google.reportsSheet}!A:E`;
+    return await this.appendData(range, values);
   }
 
   /**

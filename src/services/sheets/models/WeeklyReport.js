@@ -128,14 +128,43 @@ class WeeklyReport {
    */
   toSheetRow() {
     return [
-      this.id,
-      this.userId,
       this.date,
       this.status,
       this.completedTasks.join(';'),
       this.plannedTasks.join(';'),
       this.comment
     ];
+  }
+
+  /**
+   * Форматирует отчет для отображения пользователю
+   * @returns {string} - Отформатированный отчет
+   */
+  formatForDisplay() {
+    let report = `*Еженедельный отчет за ${this.date}*\n\n`;
+    report += `*Самочувствие:* ${this.status}\n\n`;
+
+    if (this.completedTasks.length > 0) {
+      report += '*Выполненные задачи:*\n';
+      this.completedTasks.forEach(task => {
+        report += `- ${task}\n`;
+      });
+      report += '\n';
+    }
+
+    if (this.plannedTasks.length > 0) {
+      report += '*Планы на следующую неделю:*\n';
+      this.plannedTasks.forEach(task => {
+        report += `- ${task}\n`;
+      });
+      report += '\n';
+    }
+
+    if (this.comment) {
+      report += `*Комментарий:*\n${this.comment}\n`;
+    }
+
+    return report;
   }
 
   /**
