@@ -62,6 +62,72 @@ class GoogleSheetsManager:
             print(f"Error getting previous week tasks: {e}")
             return []
     
+    def get_all_week_numbers(self) -> List[int]:
+        """Получить все номера недель из таблицы"""
+        try:
+            result = self.sheet.values().get(
+                spreadsheetId=self.sheet_id,
+                range='B:B'
+            ).execute()
+            
+            values = result.get('values', [])
+            if not values:
+                return []
+            
+            week_numbers = []
+            for row in values[1:]:  # Пропускаем заголовок
+                if len(row) >= 1 and row[0].isdigit():
+                    week_numbers.append(int(row[0]))
+            
+            return sorted(list(set(week_numbers)))  # Убираем дубликаты и сортируем
+        except Exception as e:
+            print(f"Error getting week numbers: {e}")
+            return []
+    
+    def delete_week_report(self, week_number: int) -> bool:
+        """Удалить отчет за указанную неделю"""
+        try:
+            result = self.sheet.values().get(
+                spreadsheetId=self.sheet_id,
+                range='A:G'
+            ).execute()
+            
+            values = result.get('values', [])
+            if not values:
+                return False
+            
+            # Находим строку с отчетом за указанную неделю
+            for i, row in enumerate(values[1:], start=2):  # Начинаем с строки 2
+                if len(row) >= 2 and row[1] == str(week_number):
+                    # Удаляем строку
+                    request = {
+                        'requests': [
+                            {
+                                'deleteDimension': {
+                                    'range': {
+                                        'sheetId': 0,
+                                        'dimension': 'ROWS',
+                                        'startIndex': i - 1,
+                                        'endIndex': i
+                                    }
+                                }
+                            }
+                        ]
+                    }
+                    
+                    self.service.spreadsheets().batchUpdate(
+                        spreadsheetId=self.sheet_id,
+                        body=request
+                    ).execute()
+                    
+                    print(f"✅ Deleted report for week {week_number}")
+                    return True
+            
+            return False
+        except Exception as e:
+            print(f"Error deleting week report: {e}")
+            return False
+    
     def save_report(self, week_number: int, completed_tasks: List[str], 
                    incomplete_tasks: List[str], planned_tasks: List[str], 
                    comment: str, rating: int) -> bool:
@@ -191,7 +257,3 @@ class GoogleSheetsManager:
         except Exception as e:
             print(f"Error clearing sheet: {e}")
             return False
-    
-    def get_test_date(self) -> str:
-        """Тестовая функция для проверки форматирования даты"""
-        return self._format_date_russian(datetime.now())
