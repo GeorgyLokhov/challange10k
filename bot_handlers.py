@@ -9,6 +9,7 @@ class BotHandlers:
     def __init__(self, user_states: UserStates):
         self.user_states = user_states
         self.sheets_manager = GoogleSheetsManager()
+        self.sheet_url = "https://docs.google.com/spreadsheets/d/16RGrwyaPaW_FHHyvRS_gyjVaULrq3pWqe5fX7SZQjb8/edit?gid=1682234301#gid=1682234301"
     
     async def start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Обработчик команды /start"""
@@ -36,6 +37,18 @@ class BotHandlers:
         try:
             if data == "create_report":
                 await self._start_report_creation(query, user_id)
+            elif data == "back":
+                await self._handle_back(query, user_id)
+            elif data == "new_report":
+                await self._start_report_creation(query, user_id)
+            elif data == "delete_report":
+                await self._handle_delete_report(query, user_id)
+            elif data == "open_sheet":
+                await self._handle_open_sheet(query, user_id)
+            elif data.startswith("delete_week_"):
+                await self._handle_delete_week_selection(query, user_id, data)
+            elif data.startswith("confirm_delete_"):
+                await self._handle_confirm_delete(query, user_id, data)
             elif data.startswith("rating_"):
                 await self._handle_rating_selection(query, user_id, data)
             elif data.startswith("task_"):
@@ -60,10 +73,86 @@ class BotHandlers:
             print(f"Error in button_handler: {e}")
             await query.edit_message_text("❌ Произошла ошибка. Попробуйте ещё раз.")
     
+    async def _handle_back(self, query, user_id):
+        """Обработка кнопки Назад"""
+        user_data = self.user_states.get_user_data(user_id)
+        current_state = user_data.state
+        
+        if current_state == BotState.WAITING_FOR_RATING:
+            await self._start_report_creation(query, user_id)
+        elif current_state == BotState.SELECTING_COMPLETED_TASKS:
+            await self._handle_rating_selection(query, user_id, f"rating_{user_data.rating}")
+        elif current_state == BotState.ADDING_ADDITIONAL_TASKS:
+            if user_data.previous_planned_tasks:
+                await self._show_completed_tasks_selection(query, user_id)
+            else:
+                await self._handle_rating_selection(query, user_id, f"rating_{user_data.rating}")
+        elif current_state == BotState.ADDING_PLANNED_TASKS:
+            self.user_states.set_state(user_id, BotState.ADDING_ADDITIONAL_TASKS)
+            keyboard = [[InlineKeyboardButton("⏭️ Пропустить", callback_data="next_step")],
+                       [InlineKeyboardButton("◀️ Назад", callback_data="back")]]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            await query.edit_message_text("➕ Что ещё было сделано? (по одной задаче):", reply_markup=reply_markup)
+        elif current_state == BotState.SELECTING_PRIORITY_TASK:
+            self.user_states.set_state(user_id, BotState.ADDING_PLANNED_TASKS)
+            await query.edit_message_text("🎯 Что запланировано на следующую неделю?")
+        elif current_state == BotState.WAITING_FOR_COMMENT:
+            if user_data.planned_tasks:
+                await self._select_priority_task(query, user_id)
+            else:
+                self.user_states.set_state(user_id, BotState.ADDING_PLANNED_TASKS)
+                await query.edit_message_text("🎯 Что запланировано на следующую неделю?")
+        elif current_state == BotState.CONFIRMING_REPORT:
+            self.user_states.set_state(user_id, BotState.WAITING_FOR_COMMENT)
+            await query.edit_message_text("💬 Добавьте комментарий к отчёту:")
+        elif current_state == BotState.DELETING_REPORT:
+            await self._show_main_menu(query, user_id)
+        elif current_state == BotState.CONFIRMING_DELETE:
+            await self._handle_delete_report(query, user_id)
+        else:
+            await self._show_main_menu(query, user_id)
+    
+    async def _show_main_menu(self, query, user_id):
+        """Показать главное меню"""
+        keyboard = [[InlineKeyboardButton("📝 Создать отчёт", callback_data="create_report")]]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await query.edit_message_text(
+            "🤖 Главное меню\n\n📊 Выберите действие:",
+            reply_markup=reply_markup
+        )
+    
     async def _start_report_creation(self, query, user_id):
         """Начать создание отчёта"""
+        self.user_states.reset_user_data(user_id)
         self.user_states.set_state(user_id, BotState.WAITING_FOR_WEEK_NUMBER)
-        await query.edit_message_text("📅 Введите номер недели для отчёта:")
+        
+        keyboard = [[InlineKeyboardButton("◀️ Назад", callback_data="back")]]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        await query.edit_message_text(
+            "📅 Введите номер недели для отчёта:",
+            reply_markup=reply_markup
+        )
+    
+    async def _show_completed_tasks_selection(self, query, user_id):
+        """Показать выбор выполненных задач"""
+        user_data = self.user_states.get_user_data(user_id)
+        
+        keyboard = []
+        for i, task in enumerate(user_data.previous_planned_tasks):
+            status = "✅" if task in user_data.completed_tasks else "❌"
+            keyboard.append([InlineKeyboardButton(f"{status} {task}", callback_data=f"task_{i}")])
+        keyboard.append([InlineKeyboardButton("➡️ Далее", callback_data="next_step")])
+        keyboard.append([InlineKeyboardButton("◀️ Назад", callback_data="back")])
+        
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        self.user_states.set_state(user_id, BotState.SELECTING_COMPLETED_TASKS)
+        
+        await query.edit_message_text(
+            f"⭐ Оценка недели: {user_data.rating}/10\n\n"
+            "📋 Вот задачи за прошедшую неделю. Нажмите на выполненные:",
+            reply_markup=reply_markup
+        )
     
     async def _handle_rating_selection(self, query, user_id, data):
         """Обработка выбора оценки"""
@@ -79,25 +168,19 @@ class BotHandlers:
             user_data.previous_planned_tasks = prev_tasks
             
             if prev_tasks:
-                keyboard = []
-                for i, task in enumerate(prev_tasks):
-                    keyboard.append([InlineKeyboardButton(f"❌ {task}", callback_data=f"task_{i}")])
-                keyboard.append([InlineKeyboardButton("➡️ Далее", callback_data="next_step")])
-                
-                reply_markup = InlineKeyboardMarkup(keyboard)
-                self.user_states.set_state(user_id, BotState.SELECTING_COMPLETED_TASKS)
-                
-                await query.edit_message_text(
-                    f"⭐ Оценка недели: {rating}/10\n\n"
-                    "📋 Вот задачи за прошедшую неделю. Нажмите на выполненные:",
-                    reply_markup=reply_markup
-                )
+                await self._show_completed_tasks_selection(query, user_id)
             else:
                 self.user_states.set_state(user_id, BotState.ADDING_ADDITIONAL_TASKS)
+                keyboard = [
+                    [InlineKeyboardButton("⏭️ Пропустить", callback_data="next_step")],
+                    [InlineKeyboardButton("◀️ Назад", callback_data="back")]
+                ]
+                reply_markup = InlineKeyboardMarkup(keyboard)
                 await query.edit_message_text(
                     f"⭐ Оценка недели: {rating}/10\n\n"
                     "📝 Задач за прошлую неделю не найдено.\n"
-                    "Напишите, что было сделано на этой неделе:"
+                    "Напишите, что было сделано на этой неделе:",
+                    reply_markup=reply_markup
                 )
         except Exception as e:
             print(f"Error in rating selection: {e}")
@@ -122,14 +205,7 @@ class BotHandlers:
                     user_data.completed_tasks.append(task)
                 
                 # Обновляем кнопки
-                keyboard = []
-                for i, t in enumerate(user_data.previous_planned_tasks):
-                    status = "✅" if t in user_data.completed_tasks else "❌"
-                    keyboard.append([InlineKeyboardButton(f"{status} {t}", callback_data=f"task_{i}")])
-                keyboard.append([InlineKeyboardButton("➡️ Далее", callback_data="next_step")])
-                
-                reply_markup = InlineKeyboardMarkup(keyboard)
-                await query.edit_message_reply_markup(reply_markup=reply_markup)
+                await self._show_completed_tasks_selection(query, user_id)
         except Exception as e:
             print(f"Error in task selection: {e}")
     
@@ -140,7 +216,10 @@ class BotHandlers:
             
             if user_data.state == BotState.SELECTING_COMPLETED_TASKS:
                 self.user_states.set_state(user_id, BotState.ADDING_ADDITIONAL_TASKS)
-                keyboard = [[InlineKeyboardButton("⏭️ Пропустить", callback_data="next_step")]]
+                keyboard = [
+                    [InlineKeyboardButton("⏭️ Пропустить", callback_data="next_step")],
+                    [InlineKeyboardButton("◀️ Назад", callback_data="back")]
+                ]
                 reply_markup = InlineKeyboardMarkup(keyboard)
                 
                 await query.edit_message_text(
@@ -171,6 +250,7 @@ class BotHandlers:
             for i, task in enumerate(user_data.planned_tasks):
                 keyboard.append([InlineKeyboardButton(task, callback_data=f"priority_{i}")])
             keyboard.append([InlineKeyboardButton("⏭️ Пропустить", callback_data="next_step")])
+            keyboard.append([InlineKeyboardButton("◀️ Назад", callback_data="back")])
             
             reply_markup = InlineKeyboardMarkup(keyboard)
             self.user_states.set_state(user_id, BotState.SELECTING_PRIORITY_TASK)
@@ -210,14 +290,124 @@ class BotHandlers:
             )
             
             if success:
+                # Отправляем чистый отчёт
                 report_text = format_report_message(user_data)
-                await query.edit_message_text(f"✅ Отчёт сохранён!\n\n{report_text}")
+                await query.edit_message_text(report_text)
+                
+                # Отправляем отдельное сообщение с кнопками
+                keyboard = [
+                    [InlineKeyboardButton("📝 Новый отчёт", callback_data="new_report")],
+                    [InlineKeyboardButton("🗑️ Удалить отчёт", callback_data="delete_report")],
+                    [InlineKeyboardButton("📊 Перейти в таблицу", url=self.sheet_url)]
+                ]
+                reply_markup = InlineKeyboardMarkup(keyboard)
+                
+                await query.message.reply_text(
+                    "✅ Отчёт успешно сохранён!\n\n"
+                    "Выберите следующее действие:",
+                    reply_markup=reply_markup
+                )
+                
                 self.user_states.reset_user_data(user_id)
             else:
                 await query.edit_message_text("❌ Ошибка сохранения. Попробуйте ещё раз.")
         except Exception as e:
             print(f"Error confirming report: {e}")
             await query.edit_message_text("❌ Ошибка при сохранении отчёта.")
+    
+    async def _handle_delete_report(self, query, user_id):
+        """Обработка удаления отчёта"""
+        try:
+            # Получаем все номера недель
+            week_numbers = await asyncio.get_event_loop().run_in_executor(
+                None, self.sheets_manager.get_all_week_numbers
+            )
+            
+            if not week_numbers:
+                await query.edit_message_text(
+                    "📄 Нет отчётов для удаления.\n\n"
+                    "Создайте первый отчёт!",
+                    reply_markup=InlineKeyboardMarkup([
+                        [InlineKeyboardButton("📝 Создать отчёт", callback_data="create_report")]
+                    ])
+                )
+                return
+            
+            keyboard = []
+            for week_num in week_numbers:
+                keyboard.append([InlineKeyboardButton(f"Неделя {week_num}", callback_data=f"delete_week_{week_num}")])
+            keyboard.append([InlineKeyboardButton("◀️ Назад", callback_data="back")])
+            
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            self.user_states.set_state(user_id, BotState.DELETING_REPORT)
+            
+            await query.edit_message_text(
+                "🗑️ Выберите неделю для удаления:",
+                reply_markup=reply_markup
+            )
+        except Exception as e:
+            print(f"Error in delete report: {e}")
+            await query.edit_message_text("❌ Ошибка при получении списка отчётов.")
+    
+    async def _handle_delete_week_selection(self, query, user_id, data):
+        """Обработка выбора недели для удаления"""
+        try:
+            week_number = int(data.split("_")[2])
+            user_data = self.user_states.get_user_data(user_id)
+            user_data.delete_week_number = week_number
+            
+            keyboard = [
+                [InlineKeyboardButton(f"🗑️ Удалить Неделю {week_number}", callback_data=f"confirm_delete_{week_number}")],
+                [InlineKeyboardButton("◀️ Назад", callback_data="back")]
+            ]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            self.user_states.set_state(user_id, BotState.CONFIRMING_DELETE)
+            
+            await query.edit_message_text(
+                f"⚠️ Вы уверены, что хотите удалить отчёт за неделю {week_number}?\n\n"
+                "Это действие нельзя отменить!",
+                reply_markup=reply_markup
+            )
+        except Exception as e:
+            print(f"Error in delete week selection: {e}")
+    
+    async def _handle_confirm_delete(self, query, user_id, data):
+        """Подтверждение удаления"""
+        try:
+            week_number = int(data.split("_")[2])
+            
+            # Удаляем отчёт
+            success = await asyncio.get_event_loop().run_in_executor(
+                None, self.sheets_manager.delete_week_report, week_number
+            )
+            
+            if success:
+                keyboard = [
+                    [InlineKeyboardButton("📝 Новый отчёт", callback_data="new_report")],
+                    [InlineKeyboardButton("🗑️ Удалить ещё отчёт", callback_data="delete_report")],
+                    [InlineKeyboardButton("📊 Перейти в таблицу", url=self.sheet_url)]
+                ]
+                reply_markup = InlineKeyboardMarkup(keyboard)
+                
+                await query.edit_message_text(
+                    f"✅ Отчёт за неделю {week_number} успешно удалён!\n\n"
+                    "Выберите следующее действие:",
+                    reply_markup=reply_markup
+                )
+                
+                self.user_states.reset_user_data(user_id)
+            else:
+                await query.edit_message_text(f"❌ Ошибка при удалении отчёта за неделю {week_number}.")
+        except Exception as e:
+            print(f"Error confirming delete: {e}")
+            await query.edit_message_text("❌ Ошибка при удалении отчёта.")
+    
+    async def _handle_open_sheet(self, query, user_id):
+        """Обработка открытия таблицы"""
+        await query.edit_message_text(
+            f"📊 [Открыть таблицу]({self.sheet_url})",
+            parse_mode='Markdown'
+        )
     
     async def _handle_edit_report(self, query, user_id):
         """Обработка редактирования отчёта"""
@@ -228,7 +418,7 @@ class BotHandlers:
                 [InlineKeyboardButton("✅ Выполненные задачи", callback_data="edit_completed")],
                 [InlineKeyboardButton("🎯 Планируемые задачи", callback_data="edit_planned")],
                 [InlineKeyboardButton("💬 Комментарий", callback_data="edit_comment")],
-                [InlineKeyboardButton("◀️ Назад", callback_data="confirm_report")]
+                [InlineKeyboardButton("◀️ Назад", callback_data="back")]
             ]
             reply_markup = InlineKeyboardMarkup(keyboard)
             
@@ -255,7 +445,7 @@ class BotHandlers:
             keyboard = []
             for i, task in enumerate(user_data.planned_tasks):
                 keyboard.append([InlineKeyboardButton(task, callback_data=f"edit_task_{i}")])
-            keyboard.append([InlineKeyboardButton("◀️ Назад", callback_data="next_step")])
+            keyboard.append([InlineKeyboardButton("◀️ Назад", callback_data="back")])
             
             reply_markup = InlineKeyboardMarkup(keyboard)
             await query.edit_message_text(
@@ -289,11 +479,20 @@ class BotHandlers:
             
             if section == "week":
                 self.user_states.set_state(user_id, BotState.WAITING_FOR_WEEK_NUMBER)
-                await query.edit_message_text("📅 Введите новый номер недели:")
+                keyboard = [[InlineKeyboardButton("◀️ Назад", callback_data="back")]]
+                reply_markup = InlineKeyboardMarkup(keyboard)
+                await query.edit_message_text("📅 Введите новый номер недели:", reply_markup=reply_markup)
             elif section == "rating":
                 keyboard = []
+                row = []
                 for i in range(1, 11):
-                    keyboard.append([InlineKeyboardButton(str(i), callback_data=f"rating_{i}")])
+                    row.append(InlineKeyboardButton(str(i), callback_data=f"rating_{i}"))
+                    if len(row) == 5:
+                        keyboard.append(row)
+                        row = []
+                if row:
+                    keyboard.append(row)
+                keyboard.append([InlineKeyboardButton("◀️ Назад", callback_data="back")])
                 reply_markup = InlineKeyboardMarkup(keyboard)
                 await query.edit_message_text("⭐ Выберите новую оценку:", reply_markup=reply_markup)
             elif section == "comment":
@@ -345,6 +544,7 @@ class BotHandlers:
                     row = []
             if row:
                 keyboard.append(row)
+            keyboard.append([InlineKeyboardButton("◀️ Назад", callback_data="back")])
             
             reply_markup = InlineKeyboardMarkup(keyboard)
             self.user_states.set_state(user_id, BotState.WAITING_FOR_RATING)
@@ -366,7 +566,8 @@ class BotHandlers:
             
             keyboard = [
                 [InlineKeyboardButton("➕ Добавить ещё", callback_data="add_more_tasks")],
-                [InlineKeyboardButton("➡️ Далее", callback_data="next_step")]
+                [InlineKeyboardButton("➡️ Далее", callback_data="next_step")],
+                [InlineKeyboardButton("◀️ Назад", callback_data="back")]
             ]
             reply_markup = InlineKeyboardMarkup(keyboard)
             
@@ -385,7 +586,8 @@ class BotHandlers:
             
             keyboard = [
                 [InlineKeyboardButton("➡️ Далее", callback_data="next_step")],
-                [InlineKeyboardButton("✏️ Изменить задачу", callback_data="edit_task")]
+                [InlineKeyboardButton("✏️ Изменить задачу", callback_data="edit_task")],
+                [InlineKeyboardButton("◀️ Назад", callback_data="back")]
             ]
             reply_markup = InlineKeyboardMarkup(keyboard)
             
@@ -406,7 +608,8 @@ class BotHandlers:
             
             keyboard = [
                 [InlineKeyboardButton("✅ Подтвердить", callback_data="confirm_report")],
-                [InlineKeyboardButton("✏️ Изменить", callback_data="edit_report")]
+                [InlineKeyboardButton("✏️ Изменить", callback_data="edit_report")],
+                [InlineKeyboardButton("◀️ Назад", callback_data="back")]
             ]
             reply_markup = InlineKeyboardMarkup(keyboard)
             
@@ -432,7 +635,8 @@ class BotHandlers:
                 
                 keyboard = [
                     [InlineKeyboardButton("➡️ Далее", callback_data="next_step")],
-                    [InlineKeyboardButton("✏️ Изменить задачу", callback_data="edit_task")]
+                    [InlineKeyboardButton("✏️ Изменить задачу", callback_data="edit_task")],
+                    [InlineKeyboardButton("◀️ Назад", callback_data="back")]
                 ]
                 reply_markup = InlineKeyboardMarkup(keyboard)
                 
