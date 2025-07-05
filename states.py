@@ -13,6 +13,8 @@ class BotState(Enum):
     WAITING_FOR_COMMENT = "waiting_for_comment"
     CONFIRMING_REPORT = "confirming_report"
     EDITING_REPORT = "editing_report"
+    DELETING_REPORT = "deleting_report"
+    CONFIRMING_DELETE = "confirming_delete"
 
 @dataclass
 class UserData:
@@ -27,6 +29,8 @@ class UserData:
     previous_planned_tasks: List[str] = field(default_factory=list)
     editing_task_index: Optional[int] = None
     current_task_input: Optional[str] = None
+    delete_week_number: Optional[int] = None
+    previous_state: Optional[BotState] = None
 
 class UserStates:
     def __init__(self):
@@ -42,4 +46,5 @@ class UserStates:
     
     def set_state(self, user_id: int, state: BotState):
         user_data = self.get_user_data(user_id)
+        user_data.previous_state = user_data.state
         user_data.state = state
