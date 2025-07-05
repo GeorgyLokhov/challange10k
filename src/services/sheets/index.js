@@ -21,7 +21,7 @@ class GoogleSheetsService {
     this.initialized = false;
     this.auth = null;
     this.sheetsClient = null;
-    this.spreadsheetId = config.googleSheets.spreadsheetId;
+    this.spreadsheetId = config.google.spreadsheetId;
     this.errorHandler = new SheetsErrorHandler();
     this.cache = new CacheManager();
   }
@@ -37,10 +37,16 @@ class GoogleSheetsService {
 
     try {
       // Создаем JWT клиент для авторизации с помощью сервисного аккаунта
+      logger.info('Используемая конфигурация Google:', {
+        spreadsheetId: this.spreadsheetId,
+        credentials_exist: !!config.google.credentials,
+        reportsSheet: config.google.reportsSheet,
+        usersSheet: config.google.usersSheet,
+      });
       this.auth = new google.auth.JWT(
-        config.googleSheets.clientEmail,
+        config.google.credentials.client_email,
         null,
-        config.googleSheets.privateKey.replace(/\\n/g, '\n'),
+        config.google.credentials.private_key.replace(/\\n/g, '\n'),
         ['https://www.googleapis.com/auth/spreadsheets']
       );
 
@@ -169,7 +175,7 @@ class GoogleSheetsService {
   async getUserReports(userId, limit = 10) {
     await this._ensureInitialized();
     
-    const range = `${config.googleSheets.reportsSheet}!A:G`;
+    const range = `${config.google.reportsSheet}!A:G`;
     const data = await this.getData(range);
     
     const reports = data
@@ -206,7 +212,7 @@ class GoogleSheetsService {
       report.comment
     ]];
     
-    const range = `${config.googleSheets.reportsSheet}!A:G`;
+    const range = `${config.google.reportsSheet}!A:G`;
     const result = await this.appendData(range, values);
     
     // Обновляем статистику пользователя
@@ -228,7 +234,7 @@ class GoogleSheetsService {
   async getUserStats(userId) {
     await this._ensureInitialized();
     
-    const range = `${config.googleSheets.usersSheet}!A:G`;
+    const range = `${config.google.usersSheet}!A:G`;
     const data = await this.getData(range);
     
     const userRow = data.find(row => row[0] === userId);
@@ -286,7 +292,7 @@ class GoogleSheetsService {
     });
     
     // Получаем все записи пользователей
-    const range = `${config.googleSheets.usersSheet}!A:I`;
+    const range = `${config.google.usersSheet}!A:I`;
     const data = await this.getData(range);
     
     // Ищем индекс пользователя в данных
@@ -306,7 +312,7 @@ class GoogleSheetsService {
         userStats.plannedTasksCount
       ]];
       
-      return await this.appendData(`${config.googleSheets.usersSheet}!A:I`, values);
+      return await this.appendData(`${config.google.usersSheet}!A:I`, values);
     } else {
       // Если пользователь найден, обновляем существующую запись
       // Индекс в таблице начинается с 1, а не с 0
@@ -323,7 +329,7 @@ class GoogleSheetsService {
         userStats.plannedTasksCount
       ]];
       
-      return await this.updateData(`${config.googleSheets.usersSheet}!A${rowNumber}:I${rowNumber}`, values);
+      return await this.updateData(`${config.google.usersSheet}!A${rowNumber}:I${rowNumber}`, values);
     }
   }
 
