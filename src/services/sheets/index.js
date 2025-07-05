@@ -345,7 +345,9 @@ class GoogleSheetsService {
         spreadsheetId: this.spreadsheetId
       });
       
+      const sheetNames = response.data.sheets.map(sheet => sheet.properties.title);
       logger.info(`Успешное соединение с таблицей: ${response.data.properties.title}`);
+      logger.info(`Найденные листы: ${sheetNames.join(', ')}`);
       return true;
     } catch (error) {
       logger.error(`Ошибка соединения с Google Sheets API: ${error.message}`, error);
