@@ -127,16 +127,31 @@ class BotHandlers:
             await query.edit_message_text("➕ Что ещё было сделано? (по одной задаче):", reply_markup=reply_markup)
         elif current_state == BotState.SELECTING_PRIORITY_TASK:
             self.user_states.set_state(user_id, BotState.ADDING_PLANNED_TASKS)
-            await query.edit_message_text("🎯 Что запланировано на следующую неделю?")
+            keyboard = [
+                [InlineKeyboardButton("⏭️ Пропустить", callback_data="next_step")],
+                [InlineKeyboardButton("◀️ Назад", callback_data="back")]
+            ]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            await query.edit_message_text("🎯 Что запланировано на следующую неделю?", reply_markup=reply_markup)
         elif current_state == BotState.WAITING_FOR_COMMENT:
             if user_data.planned_tasks:
                 await self._select_priority_task(query, user_id)
             else:
                 self.user_states.set_state(user_id, BotState.ADDING_PLANNED_TASKS)
-                await query.edit_message_text("🎯 Что запланировано на следующую неделю?")
+                keyboard = [
+                    [InlineKeyboardButton("⏭️ Пропустить", callback_data="next_step")],
+                    [InlineKeyboardButton("◀️ Назад", callback_data="back")]
+                ]
+                reply_markup = InlineKeyboardMarkup(keyboard)
+                await query.edit_message_text("🎯 Что запланировано на следующую неделю?", reply_markup=reply_markup)
         elif current_state == BotState.CONFIRMING_REPORT:
             self.user_states.set_state(user_id, BotState.WAITING_FOR_COMMENT)
-            await query.edit_message_text("💬 Добавьте комментарий к отчёту:")
+            keyboard = [[InlineKeyboardButton("◀️ Назад", callback_data="back")]]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            await query.edit_message_text("💬 Добавьте комментарий к отчёту:", reply_markup=reply_markup)
+        elif current_state == BotState.EDITING_REPORT:
+            # Возврат к главному меню из режима редактирования
+            await self._show_main_menu(query, user_id)
         elif current_state == BotState.DELETING_REPORT:
             await self._show_main_menu(query, user_id)
         elif current_state == BotState.CONFIRMING_DELETE:
@@ -686,24 +701,25 @@ class BotHandlers:
                 user_data.incomplete_tasks.append(text)
                 user_data.current_task_input = None  # Сбрасываем флаг
                 
-                await update.message.reply_text(
-                    f"❌ Невыполненная задача '{text}' добавлена!",
-                    reply_markup=InlineKeyboardMarkup([
-                        [InlineKeyboardButton("◀️ Назад к редактированию", callback_data="edit_incomplete")]
-                    ])
-                )
+                # В режиме редактирования показываем предварительный просмотр
+                temp_query = self._create_temp_query(update)
+                await self._show_report_preview(temp_query, user_id)
             else:
                 # Обычная логика для выполненных задач
                 user_data.completed_tasks.append(text)
                 
                 # Проверяем, в режиме редактирования или создания отчета
                 if user_data.state == BotState.EDITING_REPORT:
-                    await update.message.reply_text(
-                        f"✅ Выполненная задача '{text}' добавлена!",
-                        reply_markup=InlineKeyboardMarkup([
-                            [InlineKeyboardButton("◀️ Назад к редактированию", callback_data="edit_completed")]
-                        ])
-                    )
+                    # В режиме редактирования показываем предварительный просмотр
+                    class TempQuery:
+                        def __init__(self, update):
+                            self.message = update.message
+                        
+                        async def edit_message_text(self, text, reply_markup=None, parse_mode=None):
+                            await self.message.reply_text(text, reply_markup=reply_markup, parse_mode=parse_mode)
+                    
+                    temp_query = TempQuery(update)
+                    await self._show_report_preview(temp_query, user_id)
                 else:
                     # Обычный режим создания отчета
                     keyboard = [
@@ -746,12 +762,9 @@ class BotHandlers:
             
             # Проверяем, в режиме редактирования или создания отчета
             if user_data.state == BotState.EDITING_REPORT:
-                await update.message.reply_text(
-                    f"🎯 Запланированная задача '{text}' добавлена!",
-                    reply_markup=InlineKeyboardMarkup([
-                        [InlineKeyboardButton("◀️ Назад к редактированию", callback_data="edit_planned")]
-                    ])
-                )
+                # В режиме редактирования показываем предварительный просмотр
+                temp_query = self._create_temp_query(update)
+                await self._show_report_preview(temp_query, user_id)
             else:
                 # Обычный режим создания отчета
                 keyboard = [
@@ -779,29 +792,13 @@ class BotHandlers:
             
             # Проверяем, в режиме редактирования или создания отчета
             if user_data.state == BotState.EDITING_REPORT:
-                await update.message.reply_text(
-                    f"💬 Комментарий обновлен: '{text}'",
-                    reply_markup=InlineKeyboardMarkup([
-                        [InlineKeyboardButton("◀️ Назад к редактированию", callback_data="back")]
-                    ])
-                )
+                # В режиме редактирования показываем предварительный просмотр
+                temp_query = self._create_temp_query(update)
+                await self._show_report_preview(temp_query, user_id)
             else:
-                # Обычный режим создания отчета
-                report_preview = format_report_message(user_data)
-                
-                keyboard = [
-                    [InlineKeyboardButton("✅ Подтвердить", callback_data="confirm_report")],
-                    [InlineKeyboardButton("✏️ Изменить", callback_data="edit_report")],
-                    [InlineKeyboardButton("◀️ Назад", callback_data="back")]
-                ]
-                reply_markup = InlineKeyboardMarkup(keyboard)
-                
-                self.user_states.set_state(user_id, BotState.CONFIRMING_REPORT)
-                
-                await update.message.reply_text(
-                    f"📊 Предварительный отчёт:\n\n{report_preview}\n\n✅ Подтвердить?",
-                    reply_markup=reply_markup
-                )
+                # Обычный режим создания отчета - показываем предварительный просмотр
+                temp_query = self._create_temp_query(update)
+                await self._show_report_preview(temp_query, user_id)
         except Exception as e:
             print(f"Error in comment handler: {e}")
     
@@ -1041,4 +1038,37 @@ class BotHandlers:
         except Exception as e:
             print(f"Error in specific task removal: {e}")
             await query.edit_message_text("❌ Ошибка при удалении задачи.")
+    
+    async def _show_report_preview(self, query, user_id):
+        """Показать предварительный просмотр отчёта"""
+        try:
+            user_data = self.user_states.get_user_data(user_id)
+            report_preview = format_report_message(user_data)
+            
+            keyboard = [
+                [InlineKeyboardButton("✅ Подтвердить", callback_data="confirm_report")],
+                [InlineKeyboardButton("✏️ Изменить", callback_data="edit_report")],
+                [InlineKeyboardButton("◀️ Назад", callback_data="back")]
+            ]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            
+            self.user_states.set_state(user_id, BotState.CONFIRMING_REPORT)
+            
+            await query.edit_message_text(
+                f"📊 Предварительный отчёт:\n\n{report_preview}\n\n✅ Подтвердить?",
+                reply_markup=reply_markup
+            )
+        except Exception as e:
+            print(f"Error in show report preview: {e}")
+    
+    def _create_temp_query(self, update):
+        """Создать временный query объект для использования с функциями, требующими query"""
+        class TempQuery:
+            def __init__(self, update):
+                self.message = update.message
+            
+            async def edit_message_text(self, text, reply_markup=None, parse_mode=None):
+                await self.message.reply_text(text, reply_markup=reply_markup, parse_mode=parse_mode)
+        
+        return TempQuery(update)
     
