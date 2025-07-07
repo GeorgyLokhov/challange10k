@@ -10,38 +10,60 @@ CUSTOM_EMOJIS = {
 }
 
 def format_report_message(user_data: UserData) -> str:
-    """Форматирование итогового отчёта с правильными символами"""
+    """Форматирование итогового отчёта с правильными символами и сортировкой"""
     
-    # Формируем выполненные задачи с разделением на планово и дополнительно сделанные
-    completed_section = []
+    # Собираем все выполненные/невыполненные задачи с метаданными
+    all_completed_tasks = []
     
     # Планово выполненные задачи (из previous_planned_tasks)
     for task in user_data.completed_tasks:
         if task in user_data.previous_planned_tasks:
-            if task == user_data.priority_task:
-                completed_section.append(f"✓ {task} ✶")
-            else:
-                completed_section.append(f"✓ {task}")
+            is_priority = task == user_data.priority_task
+            symbol = "✓ ✶" if is_priority else "✓"
+            all_completed_tasks.append({
+                'text': f"{symbol} {task}",
+                'is_priority': is_priority,
+                'type': 'planned_done'
+            })
     
     # Дополнительно сделанные задачи (не было в планах)
     for task in user_data.completed_tasks:
         if task not in user_data.previous_planned_tasks:
-            if task == user_data.priority_task:
-                completed_section.append(f"+ {task} ✶")
-            else:
-                completed_section.append(f"+ {task}")
+            is_priority = task == user_data.priority_task
+            symbol = "+ ✶" if is_priority else "+"
+            all_completed_tasks.append({
+                'text': f"{symbol} {task}",
+                'is_priority': is_priority,
+                'type': 'additional_done'
+            })
     
     # Невыполненные задачи (из планов, но не сделанные)
     for task in user_data.incomplete_tasks:
-        completed_section.append(f"- {task}")
+        is_priority = task == user_data.priority_task
+        symbol = "- ✶" if is_priority else "-"
+        all_completed_tasks.append({
+            'text': f"{symbol} {task}",
+            'is_priority': is_priority,
+            'type': 'undone'
+        })
     
-    # Формируем планируемые задачи
-    planned_section = []
+    # Сортируем: приоритетные задачи сначала
+    all_completed_tasks.sort(key=lambda x: (not x['is_priority'], x['type']))
+    completed_section = [item['text'] for item in all_completed_tasks]
+    
+    # Формируем планируемые задачи с правильной сортировкой
+    all_planned_tasks = []
     for task in user_data.planned_tasks:
-        if task == user_data.priority_task:
-            planned_section.append(f"☐ {task} ✶")
-        else:
-            planned_section.append(f"☐ {task}")
+        is_priority = task == user_data.priority_task
+        symbol = "☐ ✶" if is_priority else "☐"
+        all_planned_tasks.append({
+            'text': f"{symbol} {task}",
+            'is_priority': is_priority
+        })
+    
+    # Сортируем планируемые: приоритетные сначала
+    all_planned_tasks.sort(key=lambda x: not x['is_priority'])
+    planned_section = [item['text'] for item in all_planned_tasks]
     
     report = f"""#итоги_недели@lifedescription
 
