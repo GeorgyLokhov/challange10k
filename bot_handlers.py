@@ -81,7 +81,25 @@ class BotHandlers:
         if current_state == BotState.WAITING_FOR_RATING:
             await self._start_report_creation(query, user_id)
         elif current_state == BotState.SELECTING_COMPLETED_TASKS:
-            await self._handle_rating_selection(query, user_id, f"rating_{user_data.rating}")
+            # Возвращаемся к выбору оценки недели
+            self.user_states.set_state(user_id, BotState.WAITING_FOR_RATING)
+            
+            keyboard = []
+            row = []
+            for i in range(1, 11):
+                row.append(InlineKeyboardButton(str(i), callback_data=f"rating_{i}"))
+                if len(row) == 5:
+                    keyboard.append(row)
+                    row = []
+            if row:
+                keyboard.append(row)
+            keyboard.append([InlineKeyboardButton("◀️ Назад", callback_data="back")])
+            
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            await query.edit_message_text(
+                f"📅 Неделя {user_data.week_number}\n\n⭐ Оцените неделю от 1 до 10:",
+                reply_markup=reply_markup
+            )
         elif current_state == BotState.ADDING_ADDITIONAL_TASKS:
             if user_data.previous_planned_tasks:
                 await self._show_completed_tasks_selection(query, user_id)
