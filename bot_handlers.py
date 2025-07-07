@@ -256,7 +256,15 @@ class BotHandlers:
                 )
             elif user_data.state == BotState.ADDING_ADDITIONAL_TASKS:
                 self.user_states.set_state(user_id, BotState.ADDING_PLANNED_TASKS)
-                await query.edit_message_text("🎯 Что запланировано на следующую неделю?")
+                keyboard = [
+                    [InlineKeyboardButton("⏭️ Пропустить", callback_data="next_step")],
+                    [InlineKeyboardButton("◀️ Назад", callback_data="back")]
+                ]
+                reply_markup = InlineKeyboardMarkup(keyboard)
+                await query.edit_message_text(
+                    "🎯 Что запланировано на следующую неделю?",
+                    reply_markup=reply_markup
+                )
             elif user_data.state == BotState.ADDING_PLANNED_TASKS:
                 if user_data.planned_tasks:
                     await self._select_priority_task(query, user_id)
@@ -599,8 +607,11 @@ class BotHandlers:
             ]
             reply_markup = InlineKeyboardMarkup(keyboard)
             
+            # Формируем список всех выполненных задач
+            tasks_list = "\n".join([f"✅ {task}" for task in user_data.completed_tasks])
+            
             await update.message.reply_text(
-                f"✅ Задача добавлена: {text}\n\n➕ Что дальше?",
+                f"✅ Выполненные задачи:\n{tasks_list}\n\n➕ Что дальше?",
                 reply_markup=reply_markup
             )
         except Exception as e:
@@ -619,8 +630,11 @@ class BotHandlers:
             ]
             reply_markup = InlineKeyboardMarkup(keyboard)
             
+            # Формируем список всех запланированных задач
+            tasks_list = "\n".join([f"• {task}" for task in user_data.planned_tasks])
+            
             await update.message.reply_text(
-                f"📝 Задача добавлена: {text}\n\n🎯 Что дальше?",
+                f"📝 Запланированные задачи:\n{tasks_list}\n\n🎯 Что дальше?",
                 reply_markup=reply_markup
             )
         except Exception as e:
