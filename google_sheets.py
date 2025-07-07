@@ -54,73 +54,197 @@ class GoogleSheetsManager:
     
     def get_previous_week_tasks(self, week_number: int) -> List[str]:
         """Получить планируемые задачи из предыдущей недели"""
+        debug_info = {
+            'total_checks': 0,
+            'week_found': False,
+            'data_found': False,
+            'rows_analyzed': 0,
+            'exact_matches': [],
+            'close_matches': [],
+            'all_weeks_found': [],
+            'errors': []
+        }
+        
         try:
-            print(f"🔍 Ищем задачи для недели {week_number}, предыдущая неделя: {week_number - 1}")
+            print(f"🔍 [ДИАГНОСТИКА] Ищем задачи для недели {week_number}, предыдущая неделя: {week_number - 1}")
+            debug_info['target_week'] = week_number - 1
+            debug_info['total_checks'] += 1
             
             if week_number <= 1:
-                print("⚠️ Неделя <= 1, возвращаем пустой список")
+                debug_info['errors'].append("Неделя <= 1")
+                print("⚠️ [ДИАГНОСТИКА] Неделя <= 1, возвращаем пустой список")
+                self._save_debug_info(debug_info)
                 return []
+            
+            # Специфичный запрос к листу WeeklyReports
+            range_name = 'WeeklyReports!A:G'
+            print(f"📊 [ДИАГНОСТИКА] Запрашиваем данные из диапазона: {range_name}")
             
             result = self.sheet.values().get(
                 spreadsheetId=self.sheet_id,
-                range='A:G'
+                range=range_name
             ).execute()
+            debug_info['total_checks'] += 1
             
             values = result.get('values', [])
-            print(f"📊 Получено строк из таблицы: {len(values)}")
+            debug_info['rows_total'] = len(values)
+            print(f"📊 [ДИАГНОСТИКА] Получено строк из таблицы: {len(values)}")
             
             if not values:
-                print("❌ Таблица пустая")
+                debug_info['errors'].append("Таблица пустая")
+                print("❌ [ДИАГНОСТИКА] Таблица пустая")
+                self._save_debug_info(debug_info)
                 return []
             
             # Показываем заголовки для отладки
             if len(values) > 0:
-                print(f"📋 Заголовки: {values[0]}")
+                debug_info['headers'] = values[0]
+                print(f"📋 [ДИАГНОСТИКА] Заголовки: {values[0]}")
+                # Проверяем правильность заголовков
+                expected_headers = ['Дата и время отчёта', 'Номер недели', 'Оценка недели', 'Сделанные задачи', 'Не сделанные задачи', 'Запланированные задачи', 'Комментарий']
+                if len(values[0]) >= 6:
+                    print(f"📋 [ДИАГНОСТИКА] Колонка F (индекс 5): '{values[0][5] if len(values[0]) > 5 else 'ОТСУТСТВУЕТ'}'")
             
             prev_week = week_number - 1
-            print(f"🎯 Ищем неделю: '{prev_week}'")
+            print(f"🎯 [ДИАГНОСТИКА] Ищем неделю: '{prev_week}'")
             
             # Показываем все данные для диагностики
-            print(f"🔍 Всего строк для анализа: {len(values) - 1}")
+            print(f"🔍 [ДИАГНОСТИКА] Всего строк для анализа: {len(values) - 1}")
+            debug_info['rows_analyzed'] = len(values) - 1
             
-            # Ищем отчет за предыдущую неделю
+            # ПЕРВЫЙ ПРОХОД: Собираем все номера недель для анализа
+            print(f"🔍 [ДИАГНОСТИКА] === ПЕРВЫЙ ПРОХОД: Анализ всех недель в таблице ===")
+            for i, row in enumerate(values[1:], 1):
+                week_cell = self._safe_get_cell(row, 1)
+                cleaned_week = self._clean_week_number(week_cell)
+                if cleaned_week:
+                    debug_info['all_weeks_found'].append({
+                        'row': i,
+                        'original': week_cell,
+                        'cleaned': cleaned_week,
+                        'as_int': int(cleaned_week) if cleaned_week.isdigit() else None
+                    })
+            
+            print(f"🔍 [ДИАГНОСТИКА] Найдены следующие недели в таблице:")
+            for week_info in debug_info['all_weeks_found']:
+                print(f"   Строка {week_info['row']}: '{week_info['original']}' -> '{week_info['cleaned']}' -> {week_info['as_int']}")
+            
+            # ВТОРОЙ ПРОХОД: Детальный поиск нужной недели
+            print(f"🔍 [ДИАГНОСТИКА] === ВТОРОЙ ПРОХОД: Поиск недели {prev_week} ===")
+            
             for i, row in enumerate(values[1:], 1):  # Пропускаем заголовок
+                debug_info['total_checks'] += 1
+                
                 # Безопасно получаем номер недели
                 week_cell = self._safe_get_cell(row, 1)  # Колонка B (индекс 1)
                 cleaned_week = self._clean_week_number(week_cell)
                 
                 # Показываем содержимое всей строки для диагностики
-                print(f"📄 Строка {i}: {row}")
-                print(f"   Неделя: '{week_cell}' -> очищенная: '{cleaned_week}'")
+                print(f"📄 [ДИАГНОСТИКА] Строка {i}: {row}")
+                print(f"   Неделя RAW: '{week_cell}' (длина: {len(week_cell)}, тип: {type(week_cell)})")
+                print(f"   Неделя CLEAN: '{cleaned_week}' (длина: {len(cleaned_week)})")
+                print(f"   Ищем: '{prev_week}' (тип: {type(prev_week)})")
                 
-                # Улучшенное сравнение: проверяем и точное совпадение, и числовое
-                week_matches = (
-                    cleaned_week == str(prev_week) or  # Точное строковое совпадение
-                    (cleaned_week.isdigit() and int(cleaned_week) == prev_week)  # Числовое совпадение
-                )
+                # Множественные варианты сравнения
+                string_match = cleaned_week == str(prev_week)
+                int_match = cleaned_week.isdigit() and int(cleaned_week) == prev_week
+                contains_match = str(prev_week) in cleaned_week
+                
+                print(f"   Проверки: string_match={string_match}, int_match={int_match}, contains_match={contains_match}")
+                
+                # Сохраняем близкие совпадения
+                if contains_match or abs(int(cleaned_week) - prev_week) <= 1 if cleaned_week.isdigit() else False:
+                    debug_info['close_matches'].append({
+                        'row': i,
+                        'week_cell': week_cell,
+                        'cleaned': cleaned_week,
+                        'row_data': row[:6]  # Первые 6 колонок
+                    })
+                
+                # Улучшенное сравнение
+                week_matches = string_match or int_match
                 
                 if week_matches:
-                    print(f"✅ Найдена строка для недели {prev_week}")
+                    debug_info['week_found'] = True
+                    debug_info['exact_matches'].append({'row': i, 'data': row})
+                    print(f"✅ [ДИАГНОСТИКА] НАЙДЕНА СТРОКА для недели {prev_week}!")
                     
                     # Безопасно получаем запланированные задачи из колонки F (индекс 5)
                     planned_tasks_cell = self._safe_get_cell(row, 5)
-                    print(f"📝 Колонка F (запланированные задачи): '{planned_tasks_cell}'")
+                    print(f"📝 [ДИАГНОСТИКА] Колонка F (индекс 5, запланированные задачи):")
+                    print(f"   RAW: '{planned_tasks_cell}'")
+                    print(f"   Длина: {len(planned_tasks_cell)}")
+                    print(f"   Тип: {type(planned_tasks_cell)}")
+                    print(f"   После strip(): '{planned_tasks_cell.strip()}'")
+                    print(f"   Булево значение: {bool(planned_tasks_cell and planned_tasks_cell.strip())}")
                     
                     if planned_tasks_cell and planned_tasks_cell.strip():
+                        debug_info['data_found'] = True
                         # Разделяем задачи по переносам строки
                         planned_tasks = planned_tasks_cell.split('\n')
                         clean_tasks = [task.strip() for task in planned_tasks if task.strip()]
-                        print(f"🎯 Найденные задачи: {clean_tasks}")
+                        print(f"🎯 [ДИАГНОСТИКА] УСПЕХ! Найденные задачи: {clean_tasks}")
+                        debug_info['found_tasks'] = clean_tasks
+                        self._save_debug_info(debug_info)
                         return clean_tasks
                     else:
-                        print("❌ Колонка F пустая или содержит только пробелы")
+                        debug_info['errors'].append(f"Колонка F пустая в строке {i}")
+                        print("❌ [ДИАГНОСТИКА] Колонка F пустая или содержит только пробелы")
             
-            print(f"❌ Не найдено строки для недели {prev_week}")
+            # Финальная диагностика
+            print(f"❌ [ДИАГНОСТИКА] === ФИНАЛЬНЫЙ РЕЗУЛЬТАТ ===")
+            print(f"   Искали неделю: {prev_week}")
+            print(f"   Всего проверок: {debug_info['total_checks']}")
+            print(f"   Строк проанализировано: {debug_info['rows_analyzed']}")
+            print(f"   Неделя найдена: {debug_info['week_found']}")
+            print(f"   Данные найдены: {debug_info['data_found']}")
+            print(f"   Точные совпадения: {len(debug_info['exact_matches'])}")
+            print(f"   Близкие совпадения: {len(debug_info['close_matches'])}")
+            
+            if debug_info['close_matches']:
+                print(f"🔍 [ДИАГНОСТИКА] Близкие совпадения (возможные проблемы форматирования):")
+                for match in debug_info['close_matches']:
+                    print(f"   Строка {match['row']}: '{match['week_cell']}' -> '{match['cleaned']}'")
+            
+            self._save_debug_info(debug_info)
             return []
             
         except Exception as e:
-            print(f"💥 Ошибка при получении задач: {e}")
+            debug_info['errors'].append(f"Exception: {str(e)}")
+            print(f"💥 [ДИАГНОСТИКА] Ошибка при получении задач: {e}")
+            self._save_debug_info(debug_info)
             return []
+    
+    def _save_debug_info(self, debug_info):
+        """Сохранить диагностическую информацию для отображения пользователю"""
+        # Сохраняем в переменную класса для доступа из других методов
+        self.last_debug_info = debug_info
+        print(f"💾 [ДИАГНОСТИКА] Информация сохранена: {len(debug_info)} ключей")
+    
+    def get_last_debug_summary(self) -> str:
+        """Получить краткую сводку последней диагностики"""
+        if not hasattr(self, 'last_debug_info'):
+            return "Диагностика не выполнялась"
+        
+        info = self.last_debug_info
+        summary = f"""
+🔍 **ДИАГНОСТИКА ПОИСКА ЗАДАЧ:**
+• Проверок выполнено: {info.get('total_checks', 0)}
+• Строк проанализировано: {info.get('rows_analyzed', 0)}
+• Неделя найдена: {'✅ ДА' if info.get('week_found') else '❌ НЕТ'}
+• Данные найдены: {'✅ ДА' if info.get('data_found') else '❌ НЕТ'}
+• Точных совпадений: {len(info.get('exact_matches', []))}
+• Близких совпадений: {len(info.get('close_matches', []))}
+• Всего недель в таблице: {len(info.get('all_weeks_found', []))}
+• Ошибок: {len(info.get('errors', []))}
+
+📋 **НАЙДЕННЫЕ НЕДЕЛИ:** {[w['as_int'] for w in info.get('all_weeks_found', []) if w['as_int']]}
+"""
+        
+        if info.get('errors'):
+            summary += f"\n⚠️ **ОШИБКИ:** {', '.join(info.get('errors', []))}"
+        
+        return summary.strip()
     
     def get_all_week_numbers(self) -> List[int]:
         """Получить все номера недель из таблицы"""
