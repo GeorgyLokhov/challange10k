@@ -39,7 +39,9 @@ class GoogleSheetsManager:
         if not week_str:
             return ""
         # Убираем все нечисловые символы (пробелы, точки и т.д.)
-        return re.sub(r"[^0-9]", "", str(week_str))
+        cleaned = re.sub(r"[^0-9]", "", str(week_str))
+        print(f"🧹 _clean_week_number: '{week_str}' -> '{cleaned}' (длина: {len(week_str)} -> {len(cleaned)})")
+        return cleaned
     
     def _safe_get_cell(self, row: List[str], index: int) -> str:
         """Безопасное получение ячейки из строки"""
@@ -78,29 +80,40 @@ class GoogleSheetsManager:
             prev_week = week_number - 1
             print(f"🎯 Ищем неделю: '{prev_week}'")
             
+            # Показываем все данные для диагностики
+            print(f"🔍 Всего строк для анализа: {len(values) - 1}")
+            
             # Ищем отчет за предыдущую неделю
             for i, row in enumerate(values[1:], 1):  # Пропускаем заголовок
                 # Безопасно получаем номер недели
                 week_cell = self._safe_get_cell(row, 1)  # Колонка B (индекс 1)
                 cleaned_week = self._clean_week_number(week_cell)
                 
-                print(f"📄 Строка {i}: длина={len(row)}, неделя='{week_cell}' -> очищенная='{cleaned_week}'")
+                # Показываем содержимое всей строки для диагностики
+                print(f"📄 Строка {i}: {row}")
+                print(f"   Неделя: '{week_cell}' -> очищенная: '{cleaned_week}'")
                 
-                if cleaned_week == str(prev_week):
+                # Улучшенное сравнение: проверяем и точное совпадение, и числовое
+                week_matches = (
+                    cleaned_week == str(prev_week) or  # Точное строковое совпадение
+                    (cleaned_week.isdigit() and int(cleaned_week) == prev_week)  # Числовое совпадение
+                )
+                
+                if week_matches:
                     print(f"✅ Найдена строка для недели {prev_week}")
                     
                     # Безопасно получаем запланированные задачи из колонки F (индекс 5)
                     planned_tasks_cell = self._safe_get_cell(row, 5)
                     print(f"📝 Колонка F (запланированные задачи): '{planned_tasks_cell}'")
                     
-                    if planned_tasks_cell:
+                    if planned_tasks_cell and planned_tasks_cell.strip():
                         # Разделяем задачи по переносам строки
                         planned_tasks = planned_tasks_cell.split('\n')
                         clean_tasks = [task.strip() for task in planned_tasks if task.strip()]
                         print(f"🎯 Найденные задачи: {clean_tasks}")
                         return clean_tasks
                     else:
-                        print("❌ Колонка F пустая")
+                        print("❌ Колонка F пустая или содержит только пробелы")
             
             print(f"❌ Не найдено строки для недели {prev_week}")
             return []
