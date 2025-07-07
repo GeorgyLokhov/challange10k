@@ -251,7 +251,7 @@ class GoogleSheetsManager:
         try:
             result = self.sheet.values().get(
                 spreadsheetId=self.sheet_id,
-                range='B:B'
+                range='WeeklyReports!B:B'
             ).execute()
             
             values = result.get('values', [])
@@ -274,9 +274,11 @@ class GoogleSheetsManager:
     def delete_week_report(self, week_number: int) -> bool:
         """Удалить отчет за указанную неделю"""
         try:
+            print(f"🗑️ [УДАЛЕНИЕ] Удаляем отчет за неделю {week_number}")
+            
             result = self.sheet.values().get(
                 spreadsheetId=self.sheet_id,
-                range='A:G'
+                range='WeeklyReports!A:G'
             ).execute()
             
             values = result.get('values', [])
@@ -284,18 +286,45 @@ class GoogleSheetsManager:
                 return False
             
             # Находим строку с отчетом за указанную неделю
+            print(f"🔍 [УДАЛЕНИЕ] Анализируем {len(values)-1} строк данных")
+            
             for i, row in enumerate(values[1:], start=2):  # Начинаем с строки 2
                 week_cell = self._safe_get_cell(row, 1)
                 cleaned_week = self._clean_week_number(week_cell)
+                print(f"📄 [УДАЛЕНИЕ] Строка {i}: неделя '{week_cell}' -> '{cleaned_week}'")
                 
-                if cleaned_week == str(week_number):
+                # Улучшенное сравнение как в get_previous_week_tasks
+                week_matches = (
+                    cleaned_week == str(week_number) or
+                    (cleaned_week.isdigit() and int(cleaned_week) == week_number)
+                )
+                
+                if week_matches:
+                    print(f"✅ [УДАЛЕНИЕ] Найдена строка {i} для недели {week_number}")
+                    
+                    # Получаем информацию о листе для правильного sheetId
+                    sheet_metadata = self.service.spreadsheets().get(
+                        spreadsheetId=self.sheet_id
+                    ).execute()
+                    
+                    sheet_id = None
+                    for sheet in sheet_metadata['sheets']:
+                        if sheet['properties']['title'] == 'WeeklyReports':
+                            sheet_id = sheet['properties']['sheetId']
+                            break
+                    
+                    if sheet_id is None:
+                        sheet_id = 0  # Fallback к первому листу
+                    
+                    print(f"📊 [УДАЛЕНИЕ] Используем sheetId: {sheet_id}")
+                    
                     # Удаляем строку
                     request = {
                         'requests': [
                             {
                                 'deleteDimension': {
                                     'range': {
-                                        'sheetId': 0,
+                                        'sheetId': sheet_id,
                                         'dimension': 'ROWS',
                                         'startIndex': i - 1,
                                         'endIndex': i
@@ -310,7 +339,7 @@ class GoogleSheetsManager:
                         body=request
                     ).execute()
                     
-                    print(f"✅ Deleted report for week {week_number}")
+                    print(f"✅ [УДАЛЕНИЕ] Успешно удален отчет за неделю {week_number}")
                     return True
             
             return False
@@ -440,6 +469,46 @@ class GoogleSheetsManager:
             print(f"Error checking week existence: {e}")
             return False
     
+    def get_week_report(self, week_number: int) -> Optional[Dict]:
+        """Получить отчет за указанную неделю"""
+        try:
+            result = self.sheet.values().get(
+                spreadsheetId=self.sheet_id,
+                range='WeeklyReports!A:G'
+            ).execute()
+            
+            values = result.get('values', [])
+            if not values:
+                return None
+            
+            # Ищем строку с отчетом за указанную неделю
+            for i, row in enumerate(values[1:], start=2):  # Начинаем с строки 2
+                week_cell = self._safe_get_cell(row, 1)
+                cleaned_week = self._clean_week_number(week_cell)
+                
+                # Улучшенное сравнение
+                week_matches = (
+                    cleaned_week == str(week_number) or
+                    (cleaned_week.isdigit() and int(cleaned_week) == week_number)
+                )
+                
+                if week_matches:
+                    # Возвращаем данные отчета
+                    return {
+                        'date': self._safe_get_cell(row, 0),
+                        'week_number': week_number,
+                        'rating': int(self._safe_get_cell(row, 2)) if self._safe_get_cell(row, 2).isdigit() else 0,
+                        'completed_tasks': self._safe_get_cell(row, 3).split('\n') if self._safe_get_cell(row, 3) else [],
+                        'incomplete_tasks': self._safe_get_cell(row, 4).split('\n') if self._safe_get_cell(row, 4) else [],
+                        'planned_tasks': self._safe_get_cell(row, 5).split('\n') if self._safe_get_cell(row, 5) else [],
+                        'comment': self._safe_get_cell(row, 6)
+                    }
+            
+            return None
+        except Exception as e:
+            print(f"Error getting week report: {e}")
+            return None
+
     def clear_sheet(self) -> bool:
         """Очистить все данные (кроме заголовков) - для отладки"""
         try:

@@ -47,8 +47,15 @@ def format_report_message(user_data: UserData) -> str:
             'type': 'undone'
         })
     
-    # Сортируем: приоритетные задачи сначала
-    all_completed_tasks.sort(key=lambda x: (not x['is_priority'], x['type']))
+    # Определяем приоритет типов задач для сортировки
+    type_priority = {
+        'planned_done': 1,      # Выполненные из планов
+        'undone': 2,           # Невыполненные 
+        'additional_done': 3   # Дополнительные выполненные
+    }
+    
+    # Сортируем: сначала приоритетные (независимо от типа), потом по типу
+    all_completed_tasks.sort(key=lambda x: (not x['is_priority'], type_priority.get(x['type'], 999)))
     completed_section = [item['text'] for item in all_completed_tasks]
     
     # Формируем планируемые задачи с правильной сортировкой

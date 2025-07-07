@@ -16,12 +16,16 @@ class BotHandlers:
         user_id = update.effective_user.id
         self.user_states.reset_user_data(user_id)
         
-        keyboard = [[InlineKeyboardButton("📝 Создать отчёт", callback_data="create_report")]]
+        keyboard = [
+            [InlineKeyboardButton("📝 Создать отчёт", callback_data="create_report")],
+            [InlineKeyboardButton("✏️ Изменить отчёт", callback_data="edit_existing_report")],
+            [InlineKeyboardButton("🗑️ Удалить отчёт", callback_data="delete_report")]
+        ]
         reply_markup = InlineKeyboardMarkup(keyboard)
         
         await update.message.reply_text(
             "🤖 Привет! Я помогу создать еженедельный отчёт.\n\n"
-            "📊 Нажми кнопку ниже, чтобы начать:",
+            "📊 Выберите действие:",
             reply_markup=reply_markup
         )
     
@@ -43,10 +47,14 @@ class BotHandlers:
                 await self._start_report_creation(query, user_id)
             elif data == "delete_report":
                 await self._handle_delete_report(query, user_id)
+            elif data == "edit_existing_report":
+                await self._handle_edit_existing_report(query, user_id)
             elif data == "open_sheet":
                 await self._handle_open_sheet(query, user_id)
             elif data.startswith("delete_week_"):
                 await self._handle_delete_week_selection(query, user_id, data)
+            elif data.startswith("edit_week_"):
+                await self._handle_edit_week_selection(query, user_id, data)
             elif data.startswith("confirm_delete_"):
                 await self._handle_confirm_delete(query, user_id, data)
             elif data.startswith("rating_"):
@@ -69,6 +77,12 @@ class BotHandlers:
                 await self._handle_edit_report(query, user_id)
             elif data.startswith("edit_"):
                 await self._handle_edit_section(query, user_id, data)
+            elif data.startswith("add_") and data.endswith("_task"):
+                await self._handle_add_task_for_edit(query, user_id, data)
+            elif data.startswith("remove_") and data.endswith("_task"):
+                await self._handle_remove_task_for_edit(query, user_id, data)
+            elif data.startswith("remove_") and "_task_" in data:
+                await self._handle_specific_task_removal(query, user_id, data)
         except Exception as e:
             print(f"Error in button_handler: {e}")
             await query.edit_message_text("❌ Произошла ошибка. Попробуйте ещё раз.")
@@ -132,7 +146,11 @@ class BotHandlers:
     
     async def _show_main_menu(self, query, user_id):
         """Показать главное меню"""
-        keyboard = [[InlineKeyboardButton("📝 Создать отчёт", callback_data="create_report")]]
+        keyboard = [
+            [InlineKeyboardButton("📝 Создать отчёт", callback_data="create_report")],
+            [InlineKeyboardButton("✏️ Изменить отчёт", callback_data="edit_existing_report")],
+            [InlineKeyboardButton("🗑️ Удалить отчёт", callback_data="delete_report")]
+        ]
         reply_markup = InlineKeyboardMarkup(keyboard)
         await query.edit_message_text(
             "🤖 Главное меню\n\n📊 Выберите действие:",
@@ -160,6 +178,7 @@ class BotHandlers:
         for i, task in enumerate(user_data.previous_planned_tasks):
             status = "✅" if task in user_data.completed_tasks else "❌"
             keyboard.append([InlineKeyboardButton(f"{status} {task}", callback_data=f"task_{i}")])
+        
         keyboard.append([InlineKeyboardButton("➡️ Далее", callback_data="next_step")])
         keyboard.append([InlineKeyboardButton("◀️ Назад", callback_data="back")])
         
@@ -243,6 +262,12 @@ class BotHandlers:
             user_data = self.user_states.get_user_data(user_id)
             
             if user_data.state == BotState.SELECTING_COMPLETED_TASKS:
+                # Автоматически формируем список невыполненных задач из незавершенных планов
+                user_data.incomplete_tasks = []
+                for task in user_data.previous_planned_tasks:
+                    if task not in user_data.completed_tasks:
+                        user_data.incomplete_tasks.append(task)
+                
                 self.user_states.set_state(user_id, BotState.ADDING_ADDITIONAL_TASKS)
                 keyboard = [
                     [InlineKeyboardButton("⏭️ Пропустить", callback_data="next_step")],
@@ -270,10 +295,14 @@ class BotHandlers:
                     await self._select_priority_task(query, user_id)
                 else:
                     self.user_states.set_state(user_id, BotState.WAITING_FOR_COMMENT)
-                    await query.edit_message_text("💬 Добавьте комментарий к отчёту:")
+                    keyboard = [[InlineKeyboardButton("◀️ Назад", callback_data="back")]]
+                    reply_markup = InlineKeyboardMarkup(keyboard)
+                    await query.edit_message_text("💬 Добавьте комментарий к отчёту:", reply_markup=reply_markup)
             elif user_data.state == BotState.SELECTING_PRIORITY_TASK:
                 self.user_states.set_state(user_id, BotState.WAITING_FOR_COMMENT)
-                await query.edit_message_text("💬 Добавьте комментарий к отчёту:")
+                keyboard = [[InlineKeyboardButton("◀️ Назад", callback_data="back")]]
+                reply_markup = InlineKeyboardMarkup(keyboard)
+                await query.edit_message_text("💬 Добавьте комментарий к отчёту:", reply_markup=reply_markup)
         except Exception as e:
             print(f"Error in next step: {e}")
     
@@ -308,7 +337,9 @@ class BotHandlers:
                 user_data.priority_task = user_data.planned_tasks[task_index]
             
             self.user_states.set_state(user_id, BotState.WAITING_FOR_COMMENT)
-            await query.edit_message_text("💬 Добавьте комментарий к отчёту:")
+            keyboard = [[InlineKeyboardButton("◀️ Назад", callback_data="back")]]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            await query.edit_message_text("💬 Добавьте комментарий к отчёту:", reply_markup=reply_markup)
         except Exception as e:
             print(f"Error in priority selection: {e}")
     
@@ -512,6 +543,7 @@ class BotHandlers:
         """Редактирование секции отчёта"""
         try:
             section = data.split("_")[1]
+            user_data = self.user_states.get_user_data(user_id)
             
             if section == "week":
                 self.user_states.set_state(user_id, BotState.WAITING_FOR_WEEK_NUMBER)
@@ -533,7 +565,57 @@ class BotHandlers:
                 await query.edit_message_text("⭐ Выберите новую оценку:", reply_markup=reply_markup)
             elif section == "comment":
                 self.user_states.set_state(user_id, BotState.WAITING_FOR_COMMENT)
-                await query.edit_message_text("💬 Введите новый комментарий:")
+                keyboard = [[InlineKeyboardButton("◀️ Назад", callback_data="back")]]
+                reply_markup = InlineKeyboardMarkup(keyboard)
+                await query.edit_message_text("💬 Введите новый комментарий:", reply_markup=reply_markup)
+            elif section == "completed":
+                # Редактирование выполненных задач
+                current_tasks = "\n".join([f"{i+1}. {task}" for i, task in enumerate(user_data.completed_tasks)]) or "Нет выполненных задач"
+                
+                keyboard = [
+                    [InlineKeyboardButton("➕ Добавить задачу", callback_data="add_completed_task")],
+                    [InlineKeyboardButton("🗑️ Удалить задачу", callback_data="remove_completed_task")],
+                    [InlineKeyboardButton("◀️ Назад", callback_data="back")]
+                ]
+                reply_markup = InlineKeyboardMarkup(keyboard)
+                
+                await query.edit_message_text(
+                    f"✅ **Текущие выполненные задачи:**\n\n{current_tasks}\n\nВыберите действие:",
+                    reply_markup=reply_markup,
+                    parse_mode='Markdown'
+                )
+            elif section == "incomplete":
+                # Редактирование невыполненных задач
+                current_tasks = "\n".join([f"{i+1}. {task}" for i, task in enumerate(user_data.incomplete_tasks)]) or "Нет невыполненных задач"
+                
+                keyboard = [
+                    [InlineKeyboardButton("➕ Добавить задачу", callback_data="add_incomplete_task")],
+                    [InlineKeyboardButton("🗑️ Удалить задачу", callback_data="remove_incomplete_task")],
+                    [InlineKeyboardButton("◀️ Назад", callback_data="back")]
+                ]
+                reply_markup = InlineKeyboardMarkup(keyboard)
+                
+                await query.edit_message_text(
+                    f"❌ **Текущие невыполненные задачи:**\n\n{current_tasks}\n\nВыберите действие:",
+                    reply_markup=reply_markup,
+                    parse_mode='Markdown'
+                )
+            elif section == "planned":
+                # Редактирование планируемых задач
+                current_tasks = "\n".join([f"{i+1}. {task}" for i, task in enumerate(user_data.planned_tasks)]) or "Нет запланированных задач"
+                
+                keyboard = [
+                    [InlineKeyboardButton("➕ Добавить задачу", callback_data="add_planned_task")],
+                    [InlineKeyboardButton("🗑️ Удалить задачу", callback_data="remove_planned_task")],
+                    [InlineKeyboardButton("◀️ Назад", callback_data="back")]
+                ]
+                reply_markup = InlineKeyboardMarkup(keyboard)
+                
+                await query.edit_message_text(
+                    f"🎯 **Текущие запланированные задачи:**\n\n{current_tasks}\n\nВыберите действие:",
+                    reply_markup=reply_markup,
+                    parse_mode='Markdown'
+                )
         except Exception as e:
             print(f"Error in edit section: {e}")
     
@@ -598,22 +680,61 @@ class BotHandlers:
         """Обработка дополнительных задач"""
         try:
             user_data = self.user_states.get_user_data(user_id)
-            user_data.completed_tasks.append(text)
             
-            keyboard = [
-                [InlineKeyboardButton("➕ Добавить ещё", callback_data="add_more_tasks")],
-                [InlineKeyboardButton("➡️ Далее", callback_data="next_step")],
-                [InlineKeyboardButton("◀️ Назад", callback_data="back")]
-            ]
-            reply_markup = InlineKeyboardMarkup(keyboard)
-            
-            # Формируем список всех выполненных задач
-            tasks_list = "\n".join([f"✅ {task}" for task in user_data.completed_tasks])
-            
-            await update.message.reply_text(
-                f"✅ Выполненные задачи:\n{tasks_list}\n\n➕ Что дальше?",
-                reply_markup=reply_markup
-            )
+            # Проверяем, редактируем ли мы невыполненные задачи
+            if hasattr(user_data, 'current_task_input') and user_data.current_task_input == "incomplete":
+                user_data.incomplete_tasks.append(text)
+                user_data.current_task_input = None  # Сбрасываем флаг
+                
+                await update.message.reply_text(
+                    f"❌ Невыполненная задача '{text}' добавлена!",
+                    reply_markup=InlineKeyboardMarkup([
+                        [InlineKeyboardButton("◀️ Назад к редактированию", callback_data="edit_incomplete")]
+                    ])
+                )
+            else:
+                # Обычная логика для выполненных задач
+                user_data.completed_tasks.append(text)
+                
+                # Проверяем, в режиме редактирования или создания отчета
+                if user_data.state == BotState.EDITING_REPORT:
+                    await update.message.reply_text(
+                        f"✅ Выполненная задача '{text}' добавлена!",
+                        reply_markup=InlineKeyboardMarkup([
+                            [InlineKeyboardButton("◀️ Назад к редактированию", callback_data="edit_completed")]
+                        ])
+                    )
+                else:
+                    # Обычный режим создания отчета
+                    keyboard = [
+                        [InlineKeyboardButton("➕ Добавить ещё", callback_data="add_more_tasks")],
+                        [InlineKeyboardButton("➡️ Далее", callback_data="next_step")],
+                        [InlineKeyboardButton("◀️ Назад", callback_data="back")]
+                    ]
+                    reply_markup = InlineKeyboardMarkup(keyboard)
+                    
+                    # Формируем список всех выполненных задач с правильными символами
+                    tasks_list = []
+                    for task in user_data.completed_tasks:
+                        if task in user_data.previous_planned_tasks:
+                            # Планово выполненная задача
+                            symbol = "✓ ✶" if task == user_data.priority_task else "✓"
+                        else:
+                            # Дополнительно выполненная задача
+                            symbol = "+ ✶" if task == user_data.priority_task else "+"
+                        tasks_list.append(f"{symbol} {task}")
+                    
+                    # Добавляем невыполненные задачи, если есть
+                    for task in user_data.incomplete_tasks:
+                        symbol = "- ✶" if task == user_data.priority_task else "-"
+                        tasks_list.append(f"{symbol} {task}")
+                    
+                    tasks_display = "\n".join(tasks_list)
+                    
+                    await update.message.reply_text(
+                        f"📋 Задачи:\n{tasks_display}\n\n➕ Что дальше?",
+                        reply_markup=reply_markup
+                    )
         except Exception as e:
             print(f"Error in additional task handler: {e}")
     
@@ -623,20 +744,30 @@ class BotHandlers:
             user_data = self.user_states.get_user_data(user_id)
             user_data.planned_tasks.append(text)
             
-            keyboard = [
-                [InlineKeyboardButton("➡️ Далее", callback_data="next_step")],
-                [InlineKeyboardButton("✏️ Изменить задачу", callback_data="edit_task")],
-                [InlineKeyboardButton("◀️ Назад", callback_data="back")]
-            ]
-            reply_markup = InlineKeyboardMarkup(keyboard)
-            
-            # Формируем список всех запланированных задач
-            tasks_list = "\n".join([f"• {task}" for task in user_data.planned_tasks])
-            
-            await update.message.reply_text(
-                f"📝 Запланированные задачи:\n{tasks_list}\n\n🎯 Что дальше?",
-                reply_markup=reply_markup
-            )
+            # Проверяем, в режиме редактирования или создания отчета
+            if user_data.state == BotState.EDITING_REPORT:
+                await update.message.reply_text(
+                    f"🎯 Запланированная задача '{text}' добавлена!",
+                    reply_markup=InlineKeyboardMarkup([
+                        [InlineKeyboardButton("◀️ Назад к редактированию", callback_data="edit_planned")]
+                    ])
+                )
+            else:
+                # Обычный режим создания отчета
+                keyboard = [
+                    [InlineKeyboardButton("➡️ Далее", callback_data="next_step")],
+                    [InlineKeyboardButton("✏️ Изменить задачу", callback_data="edit_task")],
+                    [InlineKeyboardButton("◀️ Назад", callback_data="back")]
+                ]
+                reply_markup = InlineKeyboardMarkup(keyboard)
+                
+                # Формируем список всех запланированных задач
+                tasks_list = "\n".join([f"• {task}" for task in user_data.planned_tasks])
+                
+                await update.message.reply_text(
+                    f"📝 Запланированные задачи:\n{tasks_list}\n\n🎯 Что дальше?",
+                    reply_markup=reply_markup
+                )
         except Exception as e:
             print(f"Error in planned task handler: {e}")
     
@@ -646,21 +777,31 @@ class BotHandlers:
             user_data = self.user_states.get_user_data(user_id)
             user_data.comment = text
             
-            report_preview = format_report_message(user_data)
-            
-            keyboard = [
-                [InlineKeyboardButton("✅ Подтвердить", callback_data="confirm_report")],
-                [InlineKeyboardButton("✏️ Изменить", callback_data="edit_report")],
-                [InlineKeyboardButton("◀️ Назад", callback_data="back")]
-            ]
-            reply_markup = InlineKeyboardMarkup(keyboard)
-            
-            self.user_states.set_state(user_id, BotState.CONFIRMING_REPORT)
-            
-            await update.message.reply_text(
-                f"📊 Предварительный отчёт:\n\n{report_preview}\n\n✅ Подтвердить?",
-                reply_markup=reply_markup
-            )
+            # Проверяем, в режиме редактирования или создания отчета
+            if user_data.state == BotState.EDITING_REPORT:
+                await update.message.reply_text(
+                    f"💬 Комментарий обновлен: '{text}'",
+                    reply_markup=InlineKeyboardMarkup([
+                        [InlineKeyboardButton("◀️ Назад к редактированию", callback_data="back")]
+                    ])
+                )
+            else:
+                # Обычный режим создания отчета
+                report_preview = format_report_message(user_data)
+                
+                keyboard = [
+                    [InlineKeyboardButton("✅ Подтвердить", callback_data="confirm_report")],
+                    [InlineKeyboardButton("✏️ Изменить", callback_data="edit_report")],
+                    [InlineKeyboardButton("◀️ Назад", callback_data="back")]
+                ]
+                reply_markup = InlineKeyboardMarkup(keyboard)
+                
+                self.user_states.set_state(user_id, BotState.CONFIRMING_REPORT)
+                
+                await update.message.reply_text(
+                    f"📊 Предварительный отчёт:\n\n{report_preview}\n\n✅ Подтвердить?",
+                    reply_markup=reply_markup
+                )
         except Exception as e:
             print(f"Error in comment handler: {e}")
     
@@ -688,3 +829,216 @@ class BotHandlers:
                 )
         except Exception as e:
             print(f"Error in task edit handler: {e}")
+    
+    async def _handle_edit_existing_report(self, query, user_id):
+        """Обработка изменения существующего отчёта"""
+        try:
+            # Получаем все номера недель
+            week_numbers = await asyncio.get_event_loop().run_in_executor(
+                None, self.sheets_manager.get_all_week_numbers
+            )
+            
+            if not week_numbers:
+                await query.edit_message_text(
+                    "📄 Нет отчётов для изменения.\n\n"
+                    "Создайте первый отчёт!",
+                    reply_markup=InlineKeyboardMarkup([
+                        [InlineKeyboardButton("📝 Создать отчёт", callback_data="create_report")],
+                        [InlineKeyboardButton("◀️ Назад", callback_data="back")]
+                    ])
+                )
+                return
+            
+            keyboard = []
+            for week_num in week_numbers:
+                keyboard.append([InlineKeyboardButton(f"✏️ Неделя {week_num}", callback_data=f"edit_week_{week_num}")])
+            keyboard.append([InlineKeyboardButton("◀️ Назад", callback_data="back")])
+            
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            self.user_states.set_state(user_id, BotState.EDITING_REPORT)
+            
+            await query.edit_message_text(
+                "✏️ Выберите неделю для изменения:",
+                reply_markup=reply_markup
+            )
+        except Exception as e:
+            print(f"Error in edit existing report: {e}")
+            await query.edit_message_text("❌ Ошибка при получении списка отчётов.")
+    
+    async def _handle_edit_week_selection(self, query, user_id, data):
+        """Обработка выбора недели для редактирования"""
+        try:
+            week_number = int(data.split("_")[2])
+            
+            # Получаем данные отчета за выбранную неделю
+            report_data = await asyncio.get_event_loop().run_in_executor(
+                None, self.sheets_manager.get_week_report, week_number
+            )
+            
+            if not report_data:
+                await query.edit_message_text(
+                    f"❌ Отчет за неделю {week_number} не найден.",
+                    reply_markup=InlineKeyboardMarkup([
+                        [InlineKeyboardButton("◀️ Назад", callback_data="edit_existing_report")]
+                    ])
+                )
+                return
+            
+            # Загружаем данные в состояние пользователя
+            user_data = self.user_states.get_user_data(user_id)
+            user_data.week_number = report_data['week_number']
+            user_data.rating = report_data['rating']
+            user_data.completed_tasks = [task.strip() for task in report_data['completed_tasks'] if task.strip()]
+            user_data.incomplete_tasks = [task.strip() for task in report_data['incomplete_tasks'] if task.strip()]
+            user_data.planned_tasks = [task.strip() for task in report_data['planned_tasks'] if task.strip()]
+            user_data.comment = report_data['comment']
+            
+            # Показываем меню редактирования отчета
+            keyboard = [
+                [InlineKeyboardButton("📅 Номер недели", callback_data="edit_week")],
+                [InlineKeyboardButton("⭐ Оценка", callback_data="edit_rating")],
+                [InlineKeyboardButton("✅ Выполненные задачи", callback_data="edit_completed")],
+                [InlineKeyboardButton("❌ Невыполненные задачи", callback_data="edit_incomplete")],
+                [InlineKeyboardButton("🎯 Планируемые задачи", callback_data="edit_planned")],
+                [InlineKeyboardButton("💬 Комментарий", callback_data="edit_comment")],
+                [InlineKeyboardButton("💾 Сохранить изменения", callback_data="confirm_report")],
+                [InlineKeyboardButton("◀️ Назад", callback_data="edit_existing_report")]
+            ]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            
+            # Формируем текущие данные отчета для отображения
+            completed_section = "\n".join([f"✓ {task}" for task in user_data.completed_tasks]) or "Нет выполненных задач"
+            incomplete_section = "\n".join([f"- {task}" for task in user_data.incomplete_tasks]) or "Нет невыполненных задач"
+            planned_section = "\n".join([f"☐ {task}" for task in user_data.planned_tasks]) or "Нет запланированных задач"
+            
+            report_preview = f"""✏️ **РЕДАКТИРОВАНИЕ ОТЧЕТА ЗА НЕДЕЛЮ {week_number}**
+
+📊 **Текущие данные:**
+📅 Неделя: {user_data.week_number}
+⭐ Оценка: {user_data.rating}/10
+
+📋 **Выполненные задачи:**
+{completed_section}
+
+❌ **Невыполненные задачи:**
+{incomplete_section}
+
+🎯 **Планируемые задачи:**
+{planned_section}
+
+💬 **Комментарий:** {user_data.comment or "Нет комментария"}
+
+Выберите, что хотите изменить:"""
+            
+            self.user_states.set_state(user_id, BotState.EDITING_REPORT)
+            
+            await query.edit_message_text(
+                report_preview,
+                reply_markup=reply_markup,
+                parse_mode='Markdown'
+            )
+        except Exception as e:
+            print(f"Error in edit week selection: {e}")
+            await query.edit_message_text("❌ Ошибка при загрузке отчета для редактирования.")
+    
+    async def _handle_add_task_for_edit(self, query, user_id, data):
+        """Обработка добавления задачи при редактировании"""
+        try:
+            task_type = data.split("_")[1]  # completed, incomplete, planned
+            
+            # Устанавливаем соответствующее состояние
+            if task_type == "completed":
+                self.user_states.set_state(user_id, BotState.ADDING_ADDITIONAL_TASKS)
+                await query.edit_message_text("✅ Введите новую выполненную задачу:")
+            elif task_type == "incomplete":
+                # Создаем новое состояние для добавления невыполненных задач
+                self.user_states.set_state(user_id, BotState.ADDING_ADDITIONAL_TASKS)  # Переиспользуем состояние
+                user_data = self.user_states.get_user_data(user_id)
+                user_data.current_task_input = "incomplete"  # Помечаем тип
+                await query.edit_message_text("❌ Введите новую невыполненную задачу:")
+            elif task_type == "planned":
+                self.user_states.set_state(user_id, BotState.ADDING_PLANNED_TASKS)
+                await query.edit_message_text("🎯 Введите новую запланированную задачу:")
+        except Exception as e:
+            print(f"Error in add task for edit: {e}")
+    
+    async def _handle_remove_task_for_edit(self, query, user_id, data):
+        """Обработка удаления задачи при редактировании"""
+        try:
+            task_type = data.split("_")[1]  # completed, incomplete, planned
+            user_data = self.user_states.get_user_data(user_id)
+            
+            # Определяем список задач для удаления
+            if task_type == "completed":
+                tasks = user_data.completed_tasks
+                task_name = "выполненную"
+                emoji = "✅"
+            elif task_type == "incomplete":
+                tasks = user_data.incomplete_tasks
+                task_name = "невыполненную"
+                emoji = "❌"
+            elif task_type == "planned":
+                tasks = user_data.planned_tasks
+                task_name = "запланированную"
+                emoji = "🎯"
+            else:
+                return
+            
+            if not tasks:
+                await query.edit_message_text(
+                    f"❌ Нет задач для удаления в категории '{task_name}'.",
+                    reply_markup=InlineKeyboardMarkup([
+                        [InlineKeyboardButton("◀️ Назад", callback_data="back")]
+                    ])
+                )
+                return
+            
+            # Показываем список задач для удаления
+            keyboard = []
+            for i, task in enumerate(tasks):
+                keyboard.append([InlineKeyboardButton(f"🗑️ {task}", callback_data=f"remove_{task_type}_task_{i}")])
+            keyboard.append([InlineKeyboardButton("◀️ Назад", callback_data="back")])
+            
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            await query.edit_message_text(
+                f"{emoji} Выберите {task_name} задачу для удаления:",
+                reply_markup=reply_markup
+            )
+        except Exception as e:
+            print(f"Error in remove task for edit: {e}")
+    
+    async def _handle_specific_task_removal(self, query, user_id, data):
+        """Обработка удаления конкретной задачи"""
+        try:
+            # Парсим данные: remove_completed_task_0, remove_incomplete_task_1, etc.
+            parts = data.split("_")
+            task_type = parts[1]  # completed, incomplete, planned
+            task_index = int(parts[3])  # индекс задачи
+            
+            user_data = self.user_states.get_user_data(user_id)
+            
+            # Определяем список и удаляем задачу
+            if task_type == "completed" and task_index < len(user_data.completed_tasks):
+                removed_task = user_data.completed_tasks.pop(task_index)
+                task_name = "выполненная"
+            elif task_type == "incomplete" and task_index < len(user_data.incomplete_tasks):
+                removed_task = user_data.incomplete_tasks.pop(task_index)
+                task_name = "невыполненная"
+            elif task_type == "planned" and task_index < len(user_data.planned_tasks):
+                removed_task = user_data.planned_tasks.pop(task_index)
+                task_name = "запланированная"
+            else:
+                await query.edit_message_text("❌ Ошибка: задача не найдена.")
+                return
+            
+            # Возвращаемся к меню редактирования этого типа задач
+            await query.edit_message_text(
+                f"✅ {task_name.capitalize()} задача '{removed_task}' удалена!",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("◀️ Назад к редактированию", callback_data=f"edit_{task_type}")]
+                ])
+            )
+        except Exception as e:
+            print(f"Error in specific task removal: {e}")
+            await query.edit_message_text("❌ Ошибка при удалении задачи.")
+    
