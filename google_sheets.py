@@ -1,5 +1,6 @@
 import os
 import json
+import re
 from datetime import datetime
 from google.auth.transport.requests import Request
 from google.oauth2.service_account import Credentials
@@ -33,10 +34,29 @@ class GoogleSheetsManager:
         time = dt.strftime('%H:%M')
         return f"{day} {month} {year}, {time}"
     
+    def _clean_week_number(self, week_str: str) -> str:
+        """Очистка номера недели от лишних символов"""
+        if not week_str:
+            return ""
+        # Убираем все нечисловые символы (пробелы, точки и т.д.)
+        return re.sub(r"[^0-9]", "", str(week_str))
+    
+    def _safe_get_cell(self, row: List[str], index: int) -> str:
+        """Безопасное получение ячейки из строки"""
+        try:
+            if index < len(row):
+                return row[index] if row[index] is not None else ""
+            return ""
+        except (IndexError, TypeError):
+            return ""
+    
     def get_previous_week_tasks(self, week_number: int) -> List[str]:
         """Получить планируемые задачи из предыдущей недели"""
         try:
+            print(f"🔍 Ищем задачи для недели {week_number}, предыдущая неделя: {week_number - 1}")
+            
             if week_number <= 1:
+                print("⚠️ Неделя <= 1, возвращаем пустой список")
                 return []
             
             result = self.sheet.values().get(
@@ -45,21 +65,48 @@ class GoogleSheetsManager:
             ).execute()
             
             values = result.get('values', [])
+            print(f"📊 Получено строк из таблицы: {len(values)}")
+            
             if not values:
+                print("❌ Таблица пустая")
                 return []
             
-            # Ищем отчет за предыдущую неделю
-            prev_week = week_number - 1
-            for row in values[1:]:  # Пропускаем заголовок
-                if len(row) >= 2 and row[1] == str(prev_week):
-                    # Запланированные задачи находятся в колонке F (индекс 5)
-                    if len(row) > 5 and row[5]:
-                        planned_tasks = row[5].split('\n')
-                        return [task.strip() for task in planned_tasks if task.strip()]
+            # Показываем заголовки для отладки
+            if len(values) > 0:
+                print(f"📋 Заголовки: {values[0]}")
             
+            prev_week = week_number - 1
+            print(f"🎯 Ищем неделю: '{prev_week}'")
+            
+            # Ищем отчет за предыдущую неделю
+            for i, row in enumerate(values[1:], 1):  # Пропускаем заголовок
+                # Безопасно получаем номер недели
+                week_cell = self._safe_get_cell(row, 1)  # Колонка B (индекс 1)
+                cleaned_week = self._clean_week_number(week_cell)
+                
+                print(f"📄 Строка {i}: длина={len(row)}, неделя='{week_cell}' -> очищенная='{cleaned_week}'")
+                
+                if cleaned_week == str(prev_week):
+                    print(f"✅ Найдена строка для недели {prev_week}")
+                    
+                    # Безопасно получаем запланированные задачи из колонки F (индекс 5)
+                    planned_tasks_cell = self._safe_get_cell(row, 5)
+                    print(f"📝 Колонка F (запланированные задачи): '{planned_tasks_cell}'")
+                    
+                    if planned_tasks_cell:
+                        # Разделяем задачи по переносам строки
+                        planned_tasks = planned_tasks_cell.split('\n')
+                        clean_tasks = [task.strip() for task in planned_tasks if task.strip()]
+                        print(f"🎯 Найденные задачи: {clean_tasks}")
+                        return clean_tasks
+                    else:
+                        print("❌ Колонка F пустая")
+            
+            print(f"❌ Не найдено строки для недели {prev_week}")
             return []
+            
         except Exception as e:
-            print(f"Error getting previous week tasks: {e}")
+            print(f"💥 Ошибка при получении задач: {e}")
             return []
     
     def get_all_week_numbers(self) -> List[int]:
@@ -76,8 +123,11 @@ class GoogleSheetsManager:
             
             week_numbers = []
             for row in values[1:]:  # Пропускаем заголовок
-                if len(row) >= 1 and row[0].isdigit():
-                    week_numbers.append(int(row[0]))
+                week_cell = self._safe_get_cell(row, 0)
+                cleaned_week = self._clean_week_number(week_cell)
+                
+                if cleaned_week and cleaned_week.isdigit():
+                    week_numbers.append(int(cleaned_week))
             
             return sorted(list(set(week_numbers)))  # Убираем дубликаты и сортируем
         except Exception as e:
@@ -98,7 +148,10 @@ class GoogleSheetsManager:
             
             # Находим строку с отчетом за указанную неделю
             for i, row in enumerate(values[1:], start=2):  # Начинаем с строки 2
-                if len(row) >= 2 and row[1] == str(week_number):
+                week_cell = self._safe_get_cell(row, 1)
+                cleaned_week = self._clean_week_number(week_cell)
+                
+                if cleaned_week == str(week_number):
                     # Удаляем строку
                     request = {
                         'requests': [
@@ -211,7 +264,10 @@ class GoogleSheetsManager:
             
             # Находим строку с отчетом за указанную неделю
             for i, row in enumerate(values[1:], start=2):  # Начинаем с строки 2
-                if len(row) >= 2 and row[1] == str(week_number):
+                week_cell = self._safe_get_cell(row, 1)
+                cleaned_week = self._clean_week_number(week_cell)
+                
+                if cleaned_week == str(week_number):
                     # Обновляем строку
                     range_name = f'A{i}:G{i}'
                     self.sheet.values().update(
@@ -237,7 +293,10 @@ class GoogleSheetsManager:
             
             values = result.get('values', [])
             for row in values[1:]:  # Пропускаем заголовок
-                if len(row) >= 2 and row[1] == str(week_number):
+                week_cell = self._safe_get_cell(row, 1)
+                cleaned_week = self._clean_week_number(week_cell)
+                
+                if cleaned_week == str(week_number):
                     return True
             return False
         except Exception as e:
